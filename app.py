@@ -1,8 +1,7 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
-import json
+import plotly.graph_objects as go
 from datetime import datetime
 
 st.set_page_config(page_title="URK Paper Trading", page_icon="📈", layout="centered")
@@ -16,6 +15,15 @@ if 'history' not in st.session_state:
 
 st.title("📈 URK")
 st.caption("Virtual Paper Trading App (₹0 Risk)")
+
+timeframes = {
+    "1m": ("1d", "1m"),
+    "3m": ("1d", "3m"),
+    "5m": ("1d", "5m"),
+    "15m": ("5d", "15m"),
+    "1h": ("1mo", "1h"),
+    "1D": ("6mo", "1d")
+}
 
 @st.cache_data(ttl=60)
 def get_index_price(symbol):
@@ -34,6 +42,89 @@ def get_index_price(symbol):
         pass
     return None, None, None
 
+@st.cache_data(ttl=60)
+def get_candle_data(symbol, period, interval):
+    try:
+        ticker_obj = yf.Ticker(symbol)
+        if interval == "3m":
+            df = ticker_obj.history(period="1d", interval="1m")
+            if not df.empty:
+                return df.resample('3min').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last'
+                }).dropna()
+            return pd.DataFrame()
+        else:
+            df = ticker_obj.history(period=period, interval=interval)
+            return df[['Open', 'High', 'Low', 'Close']].dropna() if not df.empty else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+# Dhan / TradingView లైట్ థీమ్ క్యాండిల్‌స్టిక్ చార్ట్ (Crosshair Cursor + Drawing Toolbox తో)
+def render_pro_candlestick(df, title):
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index.strftime('%d %b %H:%M'),
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        increasing_line_color='#089981',  # TradingView గ్రీన్
+        decreasing_line_color='#F23645',  # TradingView రెడ్
+        increasing_fillcolor='#089981',
+        decreasing_fillcolor='#F23645',
+        name=title
+    )])
+    
+    # క్రాస్‌హెయిర్ కర్సర్ (Spikes) సెట్టింగ్స్
+    fig.update_xaxes(
+        type='category',
+        tickangle=-45,
+        nticks=8,
+        showgrid=True,
+        gridcolor='#F0F3FA',
+        showspikes=True,
+        spikemode='across',
+        spikesnap='cursor',
+        spikecolor='#787B86',
+        spikethickness=1,
+        spikedash='dash'
+    )
+    fig.update_yaxes(
+        side='right',
+        showgrid=True,
+        gridcolor='#F0F3FA',
+        showspikes=True,
+        spikemode='across',
+        spikesnap='cursor',
+        spikecolor='#787B86',
+        spikethickness=1,
+        spikedash='dash'
+    )
+    
+    fig.update_layout(
+        title=dict(text=f"<b>{title}</b>", font=dict(size=14, color="#131722")),
+        template="plotly_white",
+        paper_bgcolor="#FFFFFF",
+        plot_bgcolor="#FFFFFF",
+        xaxis_rangeslider_visible=False,
+        height=430,
+        margin=dict(l=10, r=10, t=40, b=20),
+        hovermode="x unified",
+        dragmode="pan",
+        newshape=dict(line=dict(color="#2962FF", width=2))
+    )
+    
+    # పైన టూల్‌బాక్స్ (Line, Box, Zoom, Pan, Erase)
+    config = {
+        'scrollZoom': True,
+        'displayModeBar': True,
+        'displaylogo': False,
+        'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawrect', 'eraseshape']
+    }
+    st.plotly_chart(fig, use_container_width=True, config=config)
+
 # 1. మూడు ఇండెక్స్‌ల లైవ్ ధరలు
 col_n, col_b, col_s = st.columns(3)
 with col_n:
@@ -49,73 +140,33 @@ with col_s:
     if s_p:
         st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
 
-# 2. TradingView కొత్త Advanced Chart విడ్జెట్ (iPad & Mobile సపోర్ట్‌తో)
-def render_advanced_tv_chart(tv_symbol, interval="3"):
-    config = {
-        "autosize": True,
-        "symbol": tv_symbol,
-        "interval": interval,
-        "timezone": "Asia/Kolkata",
-        "theme": "light",
-        "style": "1",
-        "locale": "en",
-        "allow_symbol_change": True,
-        "hide_side_toolbar": False,
-        "hide_top_toolbar": False,
-        "withdateranges": True,
-        "calendar": False,
-        "support_host": "https://tradingview.com"
-    }
-    config_json = json.dumps(config)
-    
-    tv_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <style>
-        html, body {{ margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; }}
-      </style>
-    </head>
-    <body>
-      <div class="tradingview-widget-container" style="height:500px;width:100%;">
-        <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%;"></div>
-        <script type="text/javascript" src="https://tradingview.com" async>
-        {config_json}
-        </script>
-      </div>
-    </body>
-    </html>
-    """
-    components.html(tv_html, height=510)
+# 2. క్యాండిల్‌స్టిక్ చార్ట్ సెక్షన్
+st.subheader("📊 లైవ్ క్యాండిల్‌స్టిక్ చార్ట్ (Cursor & Toolbox)")
 
-st.subheader("📊 TradingView చార్ట్ (Toolbox & Cursor)")
-
-tv_symbols = {
-    "BSE SENSEX (Index)": "BSE:SENSEX",
-    "SBIN (NSE)": "NSE:SBIN",
-    "RELIANCE (NSE)": "NSE:RELIANCE",
-    "TCS (NSE)": "NSE:TCS",
-    "HDFC BANK (NSE)": "NSE:HDFCBANK",
-    "ICICI BANK (NSE)": "NSE:ICICIBANK",
-    "INFOSYS (NSE)": "NSE:INFY",
-    "TATA MOTORS (NSE)": "NSE:TATAMOTORS",
-    "AXIS BANK (NSE)": "NSE:AXISBANK",
-    "BAJAJ FINANCE (NSE)": "NSE:BAJFINANCE"
+chart_options = {
+    "NIFTY 50": "^NSEI",
+    "BANK NIFTY": "^NSEBANK",
+    "BSE SENSEX": "^BSESN",
+    "SBIN (NSE)": "SBIN.NS",
+    "RELIANCE (NSE)": "RELIANCE.NS",
+    "TCS (NSE)": "TCS.NS",
+    "HDFC BANK (NSE)": "HDFCBANK.NS",
+    "ICICI BANK (NSE)": "ICICIBANK.NS"
 }
 
 c1, c2 = st.columns(2)
 with c1:
-    tv_choice = st.selectbox("చార్ట్ సింబల్:", list(tv_symbols.keys()))
+    selected_chart = st.selectbox("చార్ట్ ఎంచుకోండి:", list(chart_options.keys()))
 with c2:
-    tv_interval = st.selectbox(
-        "టైమ్ ఫ్రేమ్:",
-        ["1", "3", "5", "15", "30", "60", "D"],
-        index=1,
-        format_func=lambda x: f"{x}m" if x.isdigit() else x
-    )
+    selected_tf = st.selectbox("టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1)
 
-render_advanced_tv_chart(tv_symbols[tv_choice], tv_interval)
+p_val, i_val = timeframes[selected_tf]
+candle_df = get_candle_data(chart_options[selected_chart], p_val, i_val)
+
+if not candle_df.empty:
+    render_pro_candlestick(candle_df, f"{selected_chart} • {selected_tf}")
+else:
+    st.info("ప్రస్తుతం ఈ టైమ్ ఫ్రేమ్‌కు క్యాండిల్ డేటా అందుబాటులో లేదు.")
 
 st.info(f"💰 **వర్చువల్ బ్యాలెన్స్ (Available Cash):** ₹ {st.session_state.cash:,.2f}")
 st.divider()
@@ -161,7 +212,7 @@ if live_price:
 else:
     st.warning("ప్రస్తుతం లైవ్ ధర లోడ్ అవ్వడం లేదు. మళ్ళీ ప్రయత్నించండి.")
 
-if st.button("🔄 ధరలు రిఫ్రెష్ చేయండి (Refresh)"):
+if st.button("🔄 ధరలు & చార్ట్ రిఫ్రెష్ చేయండి (Refresh)"):
     st.cache_data.clear()
     st.rerun()
 
@@ -235,4 +286,3 @@ with st.expander("📜 ఆర్డర్ హిస్టరీ (Trade Book)"):
     if st.session_state.history:
         st.table(pd.DataFrame(st.session_state.history))
     else:
-        st.write("ఇంకా ఎలాంటి ట్రేడ్స్ జరగలేదు.")
