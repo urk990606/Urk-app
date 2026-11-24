@@ -62,7 +62,6 @@ def get_candle_data(symbol, period, interval):
     except Exception:
         return pd.DataFrame()
 
-# Dhan / TradingView లైట్ థీమ్ క్యాండిల్‌స్టిక్ చార్ట్ (Crosshair Cursor + Drawing Toolbox తో)
 def render_pro_candlestick(df, title):
     fig = go.Figure(data=[go.Candlestick(
         x=df.index.strftime('%d %b %H:%M'),
@@ -70,14 +69,12 @@ def render_pro_candlestick(df, title):
         high=df['High'],
         low=df['Low'],
         close=df['Close'],
-        increasing_line_color='#089981',  # TradingView గ్రీన్
-        decreasing_line_color='#F23645',  # TradingView రెడ్
+        increasing_line_color='#089981',
+        decreasing_line_color='#F23645',
         increasing_fillcolor='#089981',
         decreasing_fillcolor='#F23645',
         name=title
     )])
-    
-    # క్రాస్‌హెయిర్ కర్సర్ (Spikes) సెట్టింగ్స్
     fig.update_xaxes(
         type='category',
         tickangle=-45,
@@ -102,7 +99,6 @@ def render_pro_candlestick(df, title):
         spikethickness=1,
         spikedash='dash'
     )
-    
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", font=dict(size=14, color="#131722")),
         template="plotly_white",
@@ -115,8 +111,6 @@ def render_pro_candlestick(df, title):
         dragmode="pan",
         newshape=dict(line=dict(color="#2962FF", width=2))
     )
-    
-    # పైన టూల్‌బాక్స్ (Line, Box, Zoom, Pan, Erase)
     config = {
         'scrollZoom': True,
         'displayModeBar': True,
@@ -125,7 +119,6 @@ def render_pro_candlestick(df, title):
     }
     st.plotly_chart(fig, use_container_width=True, config=config)
 
-# 1. మూడు ఇండెక్స్‌ల లైవ్ ధరలు
 col_n, col_b, col_s = st.columns(3)
 with col_n:
     n_p, n_c, n_pct = get_index_price("^NSEI")
@@ -140,7 +133,6 @@ with col_s:
     if s_p:
         st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
 
-# 2. క్యాండిల్‌స్టిక్ చార్ట్ సెక్షన్
 st.subheader("📊 లైవ్ క్యాండిల్‌స్టిక్ చార్ట్ (Cursor & Toolbox)")
 
 chart_options = {
@@ -171,7 +163,6 @@ else:
 st.info(f"💰 **వర్చువల్ బ్యాలెన్స్ (Available Cash):** ₹ {st.session_state.cash:,.2f}")
 st.divider()
 
-# 3. ట్రేడింగ్ కోసం స్టాక్ ఎంచుకోండి
 st.subheader("📊 ఆర్డర్ ప్లేస్ చేయండి (Buy / Sell)")
 
 stocks_list = {
@@ -286,3 +277,6 @@ with st.expander("📜 ఆర్డర్ హిస్టరీ (Trade Book)"):
     if st.session_state.history:
         st.table(pd.DataFrame(st.session_state.history))
     else:
+        st.write("ఇంకా ఎలాంటి ట్రేడ్స్ జరగలేదు.")
+
+# END OF CODE
