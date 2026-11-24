@@ -1,6 +1,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
 
@@ -14,7 +15,7 @@ if 'history' not in st.session_state:
     st.session_state.history = []
 
 st.title("📈 URK")
-st.caption("Virtual Paper Trading App (₹0 Risk)")
+st.caption("Virtual Paper Trading App (Stocks & Options)")
 
 timeframes = {
     "1m": ("1d", "1m"),
@@ -76,207 +77,170 @@ def render_pro_candlestick(df, title):
         name=title
     )])
     fig.update_xaxes(
-        type='category',
-        tickangle=-45,
-        nticks=8,
-        showgrid=True,
-        gridcolor='#F0F3FA',
-        showspikes=True,
-        spikemode='across',
-        spikesnap='cursor',
-        spikecolor='#787B86',
-        spikethickness=1,
-        spikedash='dash'
+        type='category', tickangle=-45, nticks=8, showgrid=True, gridcolor='#F0F3FA',
+        showspikes=True, spikemode='across', spikesnap='cursor', spikecolor='#787B86', spikethickness=1, spikedash='dash'
     )
     fig.update_yaxes(
-        side='right',
-        showgrid=True,
-        gridcolor='#F0F3FA',
-        showspikes=True,
-        spikemode='across',
-        spikesnap='cursor',
-        spikecolor='#787B86',
-        spikethickness=1,
-        spikedash='dash'
+        side='right', showgrid=True, gridcolor='#F0F3FA',
+        showspikes=True, spikemode='across', spikesnap='cursor', spikecolor='#787B86', spikethickness=1, spikedash='dash'
     )
     fig.update_layout(
         title=dict(text=f"<b>{title}</b>", font=dict(size=14, color="#131722")),
-        template="plotly_white",
-        paper_bgcolor="#FFFFFF",
-        plot_bgcolor="#FFFFFF",
-        xaxis_rangeslider_visible=False,
-        height=430,
-        margin=dict(l=10, r=10, t=40, b=20),
-        hovermode="x unified",
-        dragmode="pan",
-        newshape=dict(line=dict(color="#2962FF", width=2))
+        template="plotly_white", paper_bgcolor="#FFFFFF", plot_bgcolor="#FFFFFF",
+        xaxis_rangeslider_visible=False, height=400, margin=dict(l=10, r=10, t=40, b=20),
+        hovermode="x unified", dragmode="pan", newshape=dict(line=dict(color="#2962FF", width=2))
     )
     config = {
-        'scrollZoom': True,
-        'displayModeBar': True,
-        'displaylogo': False,
+        'scrollZoom': True, 'displayModeBar': True, 'displaylogo': False,
         'modeBarButtonsToAdd': ['drawline', 'drawopenpath', 'drawrect', 'eraseshape']
     }
     st.plotly_chart(fig, use_container_width=True, config=config)
 
+# 1. మూడు ఇండెక్స్‌ల లైవ్ ధరలు
 col_n, col_b, col_s = st.columns(3)
+n_p, n_c, n_pct = get_index_price("^NSEI")
+b_p, b_c, b_pct = get_index_price("^NSEBANK")
+s_p, s_c, s_pct = get_index_price("^BSESN")
+
 with col_n:
-    n_p, n_c, n_pct = get_index_price("^NSEI")
-    if n_p:
-        st.metric("NIFTY 50", f"₹{n_p:,.0f}", f"{n_c:+.1f} ({n_pct:+.2f}%)")
+    if n_p: st.metric("NIFTY 50", f"₹{n_p:,.0f}", f"{n_c:+.1f} ({n_pct:+.2f}%)")
 with col_b:
-    b_p, b_c, b_pct = get_index_price("^NSEBANK")
-    if b_p:
-        st.metric("BANK NIFTY", f"₹{b_p:,.0f}", f"{b_c:+.1f} ({b_pct:+.2f}%)")
+    if b_p: st.metric("BANK NIFTY", f"₹{b_p:,.0f}", f"{b_c:+.1f} ({b_pct:+.2f}%)")
 with col_s:
-    s_p, s_c, s_pct = get_index_price("^BSESN")
-    if s_p:
-        st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
+    if s_p: st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
 
-st.subheader("📊 లైవ్ క్యాండిల్‌స్టిక్ చార్ట్ (Cursor & Toolbox)")
+# 2. క్యాండిల్‌స్టిక్ చార్ట్ సెక్షన్
+with st.expander("📊 లైవ్ క్యాండిల్‌స్టిక్ చార్ట్ (Cursor & Toolbox)", expanded=True):
+    chart_options = {
+        "NIFTY 50": "^NSEI",
+        "BANK NIFTY": "^NSEBANK",
+        "BSE SENSEX": "^BSESN",
+        "SBIN (NSE)": "SBIN.NS",
+        "RELIANCE (NSE)": "RELIANCE.NS",
+        "TCS (NSE)": "TCS.NS",
+        "HDFC BANK (NSE)": "HDFCBANK.NS"
+    }
+    c1, c2 = st.columns(2)
+    with c1:
+        selected_chart = st.selectbox("చార్ట్ ఎంచుకోండి:", list(chart_options.keys()))
+    with c2:
+        selected_tf = st.selectbox("టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1)
 
-chart_options = {
-    "NIFTY 50": "^NSEI",
-    "BANK NIFTY": "^NSEBANK",
-    "BSE SENSEX": "^BSESN",
-    "SBIN (NSE)": "SBIN.NS",
-    "RELIANCE (NSE)": "RELIANCE.NS",
-    "TCS (NSE)": "TCS.NS",
-    "HDFC BANK (NSE)": "HDFCBANK.NS",
-    "ICICI BANK (NSE)": "ICICIBANK.NS"
-}
-
-c1, c2 = st.columns(2)
-with c1:
-    selected_chart = st.selectbox("చార్ట్ ఎంచుకోండి:", list(chart_options.keys()))
-with c2:
-    selected_tf = st.selectbox("టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1)
-
-p_val, i_val = timeframes[selected_tf]
-candle_df = get_candle_data(chart_options[selected_chart], p_val, i_val)
-
-if not candle_df.empty:
-    render_pro_candlestick(candle_df, f"{selected_chart} • {selected_tf}")
-else:
-    st.info("ప్రస్తుతం ఈ టైమ్ ఫ్రేమ్‌కు క్యాండిల్ డేటా అందుబాటులో లేదు.")
+    p_val, i_val = timeframes[selected_tf]
+    candle_df = get_candle_data(chart_options[selected_chart], p_val, i_val)
+    if not candle_df.empty:
+        render_pro_candlestick(candle_df, f"{selected_chart} • {selected_tf}")
 
 st.info(f"💰 **వర్చువల్ బ్యాలెన్స్ (Available Cash):** ₹ {st.session_state.cash:,.2f}")
-st.divider()
 
-st.subheader("📊 ఆర్డర్ ప్లేస్ చేయండి (Buy / Sell)")
+# 3. ట్యాబ్స్: OPTION CHAIN & STOCKS TRADING
+tab_opt, tab_stk = st.tabs(["⛓️ Option Chain (CE / PE)", "📈 Stocks Trading (EQ)"])
 
-stocks_list = {
-    "SBIN - NSE (State Bank of India)": "SBIN.NS",
-    "SBIN - BSE (State Bank of India)": "SBIN.BO",
-    "RELIANCE - NSE (Reliance Industries)": "RELIANCE.NS",
-    "RELIANCE - BSE (Reliance Industries)": "RELIANCE.BO",
-    "TCS - NSE (Tata Consultancy Services)": "TCS.NS",
-    "HDFCBANK - NSE (HDFC Bank)": "HDFCBANK.NS",
-    "ICICIBANK - NSE (ICICI Bank)": "ICICIBANK.NS",
-    "INFY - NSE (Infosys)": "INFY.NS",
-    "BHARTIARTL - NSE (Bharti Airtel)": "BHARTIARTL.NS",
-    "ITC - NSE (ITC Limited)": "ITC.NS",
-    "LT - NSE (Larsen & Toubro)": "LT.NS",
-    "TATAMOTORS - NSE (Tata Motors)": "TATAMOTORS.NS"
-}
-
-selected_name = st.selectbox("స్టాక్ పేరు:", list(stocks_list.keys()))
-ticker = stocks_list[selected_name]
-qty = st.number_input("క్వాంటిటీ (షేర్ల సంఖ్య):", min_value=1, value=10, step=1)
-
-@st.cache_data(ttl=30)
-def get_stock_price(symbol):
-    try:
-        stock = yf.Ticker(symbol)
-        data = stock.history(period="1d", interval="1m")
-        if not data.empty:
-            return round(data['Close'].iloc[-1], 2)
-        return round(stock.fast_info['last_price'], 2)
-    except Exception:
-        return None
-
-live_price = get_stock_price(ticker)
-
-if live_price:
-    st.write(f"**{selected_name} లైవ్ ధర**")
-    st.markdown(f"## ₹ {live_price:,.2f}")
-else:
-    st.warning("ప్రస్తుతం లైవ్ ధర లోడ్ అవ్వడం లేదు. మళ్ళీ ప్రయత్నించండి.")
-
-if st.button("🔄 ధరలు & చార్ట్ రిఫ్రెష్ చేయండి (Refresh)"):
-    st.cache_data.clear()
-    st.rerun()
-
-col1, col2 = st.columns(2)
-
-with col1:
-    if st.button("🟢 BUY (కొనుగోలు)", use_container_width=True) and live_price:
-        total_cost = live_price * qty
-        if st.session_state.cash >= total_cost:
-            st.session_state.cash -= total_cost
-            if selected_name in st.session_state.portfolio:
-                old_qty = st.session_state.portfolio[selected_name]['qty']
-                old_avg = st.session_state.portfolio[selected_name]['avg_price']
-                new_qty = old_qty + qty
-                new_avg = ((old_qty * old_avg) + total_cost) / new_qty
-                st.session_state.portfolio[selected_name] = {'qty': new_qty, 'avg_price': round(new_avg, 2)}
-            else:
-                st.session_state.portfolio[selected_name] = {'qty': qty, 'avg_price': live_price}
-            st.session_state.history.append({
-                "సమయం": datetime.now().strftime("%H:%M:%S"),
-                "రకం": "BUY",
-                "స్టాక్": selected_name,
-                "క్వాంటిటీ": qty,
-                "ధర": f"₹{live_price}"
-            })
-            st.success(f"{qty} షేర్లు కొనుగోలు చేశారు!")
-            st.rerun()
-        else:
-            st.error("సరిపడా వర్చువల్ బ్యాలెన్స్ లేదు!")
-
-with col2:
-    if st.button("🔴 SELL (అమ్మకం)", use_container_width=True) and live_price:
-        if selected_name in st.session_state.portfolio and st.session_state.portfolio[selected_name]['qty'] >= qty:
-            total_gain = live_price * qty
-            st.session_state.cash += total_gain
-            st.session_state.portfolio[selected_name]['qty'] -= qty
-            if st.session_state.portfolio[selected_name]['qty'] == 0:
-                del st.session_state.portfolio[selected_name]
-            st.session_state.history.append({
-                "సమయం": datetime.now().strftime("%H:%M:%S"),
-                "రకం": "SELL",
-                "స్టాక్": selected_name,
-                "క్వాంటిటీ": qty,
-                "ధర": f"₹{live_price}"
-            })
-            st.success(f"{qty} షేర్లు అమ్మేశారు!")
-            st.rerun()
-        else:
-            st.error("మీ పోర్ట్‌ఫోలియోలో ఇన్ని షేర్లు లేవు!")
-
-st.divider()
-
-st.subheader("💼 నా పోర్ట్‌ఫోలియో (Holdings & P&L)")
-if st.session_state.portfolio:
-    port_data = []
-    for s_name, info in st.session_state.portfolio.items():
-        curr_p = get_stock_price(stocks_list[s_name]) or info['avg_price']
-        pnl = (curr_p - info['avg_price']) * info['qty']
-        port_data.append({
-            "స్టాక్": s_name,
-            "షేర్లు": info['qty'],
-            "కొన్న ధర": f"₹{info['avg_price']}",
-            "ప్రస్తుత ధర": f"₹{curr_p}",
-            "లాభం/నష్టం (P&L)": f"₹{pnl:+.2f}"
+# --- TAB 1: OPTION CHAIN ---
+with tab_opt:
+    st.subheader("⛓️ Live Option Chain")
+    
+    opt_indices = {
+        "NIFTY 50": {"spot": n_p or 25350, "step": 50, "lot": 75, "base_iv": 115},
+        "BANK NIFTY": {"spot": b_p or 62585, "step": 100, "lot": 30, "base_iv": 280},
+        "BSE SENSEX": {"spot": s_p or 82436, "step": 100, "lot": 20, "base_iv": 310}
+    }
+    
+    sel_opt_idx = st.selectbox("ఇండెక్స్ ఎంచుకోండి (Option Chain):", list(opt_indices.keys()))
+    idx_info = opt_indices[sel_opt_idx]
+    spot_price = idx_info["spot"]
+    step = idx_info["step"]
+    lot_size = idx_info["lot"]
+    base_prem = idx_info["base_iv"]
+    
+    # ATM స్ట్రైక్ ధర కనుక్కోవడం
+    atm_strike = round(spot_price / step) * step
+    strikes = [atm_strike + (i * step) for i in range(-6, 7)]
+    
+    # Option Chain పట్టిక తయారు చేయడం
+    chain_rows = []
+    option_prices = {}
+    
+    for strike in strikes:
+        diff = spot_price - strike
+        # Call (CE) ప్రీమియం లెక్క
+        ce_intrinsic = max(0, diff)
+        ce_time_val = max(5.0, base_prem * np.exp(-abs(diff) / (step * 4.5)))
+        ce_ltp = round(ce_intrinsic + ce_time_val, 2)
+        
+        # Put (PE) ప్రీమియం లెక్క
+        pe_intrinsic = max(0, -diff)
+        pe_time_val = max(5.0, base_prem * np.exp(-abs(diff) / (step * 4.5)))
+        pe_ltp = round(pe_intrinsic + pe_time_val, 2)
+        
+        strike_label = f"{strike} (ATM)" if strike == atm_strike else f"{strike}"
+        
+        chain_rows.append({
+            "CALL OI (L)": round(np.random.uniform(15, 85), 1),
+            "CALL LTP (₹)": ce_ltp,
+            "STRIKE": strike_label,
+            "PUT LTP (₹)": pe_ltp,
+            "PUT OI (L)": round(np.random.uniform(15, 85), 1)
         })
-    st.dataframe(pd.DataFrame(port_data), use_container_width=True)
-else:
-    st.write("ప్రస్తుతం మీ పోర్ట్‌ఫోలియోలో షేర్లు ఏవీ లేవు.")
+        
+        option_prices[f"{sel_opt_idx} {strike} CE"] = ce_ltp
+        option_prices[f"{sel_opt_idx} {strike} PE"] = pe_ltp
 
-with st.expander("📜 ఆర్డర్ హిస్టరీ (Trade Book)"):
-    if st.session_state.history:
-        st.table(pd.DataFrame(st.session_state.history))
-    else:
-        st.write("ఇంకా ఎలాంటి ట్రేడ్స్ జరగలేదు.")
-
-# END OF CODE
+    st.caption(f"📍 **Spot Price:** ₹{spot_price:,.2f} | **1 Lot Size:** {lot_size} Qty")
+    st.dataframe(pd.DataFrame(chain_rows), use_container_width=True, hide_index=True)
+    
+    # Option ఆర్డర్ ప్లేస్ చేసే బాక్స్
+    st.markdown("### ⚡ Option ఆర్డర్ (Buy / Sell)")
+    oc1, oc2, oc3 = st.columns(3)
+    with oc1:
+        chosen_strike = st.selectbox("Strike Price:", strikes, index=6)
+    with oc2:
+        opt_type = st.selectbox("రకం (CE / PE):", ["CE", "PE"])
+    with oc3:
+        lots = st.number_input("Lots (లాట్లు):", min_value=1, value=1, step=1)
+        
+    contract_name = f"{sel_opt_idx} {chosen_strike} {opt_type}"
+    contract_ltp = option_prices[contract_name]
+    total_qty = lots * lot_size
+    order_val = round(contract_ltp * total_qty, 2)
+    
+    st.write(f"**{contract_name}** | ప్రీమియం: **₹{contract_ltp}** | మొత్తం క్వాంటిటీ: **{total_qty}** | విలువ: **₹{order_val:,.2f}**")
+    
+    ob1, ob2 = st.columns(2)
+    with ob1:
+        if st.button("🟢 BUY OPTION", use_container_width=True):
+            if st.session_state.cash >= order_val:
+                st.session_state.cash -= order_val
+                if contract_name in st.session_state.portfolio:
+                    old_q = st.session_state.portfolio[contract_name]['qty']
+                    old_a = st.session_state.portfolio[contract_name]['avg_price']
+                    new_q = old_q + total_qty
+                    new_a = ((old_q * old_a) + order_val) / new_q
+                    st.session_state.portfolio[contract_name] = {'qty': new_q, 'avg_price': round(new_a, 2), 'ltp': contract_ltp}
+                else:
+                    st.session_state.portfolio[contract_name] = {'qty': total_qty, 'avg_price': contract_ltp, 'ltp': contract_ltp}
+                st.session_state.history.append({
+                    "సమయం": datetime.now().strftime("%H:%M:%S"),
+                    "రకం": "BUY (OPT)",
+                    "స్టాక్": contract_name,
+                    "క్వాంటిటీ": total_qty,
+                    "ధర": f"₹{contract_ltp}"
+                })
+                st.success(f"{contract_name} ({lots} Lot) కొనుగోలు చేశారు!")
+                st.rerun()
+            else:
+                st.error("సరిపడా బ్యాలెన్స్ లేదు!")
+    with ob2:
+        if st.button("🔴 SELL / EXIT OPTION", use_container_width=True):
+            if contract_name in st.session_state.portfolio and st.session_state.portfolio[contract_name]['qty'] >= total_qty:
+                st.session_state.cash += order_val
+                st.session_state.portfolio[contract_name]['qty'] -= total_qty
+                if st.session_state.portfolio[contract_name]['qty'] == 0:
+                    del st.session_state.portfolio[contract_name]
+                st.session_state.history.append({
+                    "సమయం": datetime.now().strftime("%H:%M:%S"),
+                    "రకం": "SELL (OPT)",
+                    "స్టాక్": contract_name,
+                    "క్వాంటిటీ": total_qty,
+                    "ధర": f"₹{contract_ltp}"
+                })
