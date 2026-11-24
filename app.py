@@ -2,6 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
+import json
 from datetime import datetime
 
 st.set_page_config(page_title="URK Paper Trading", page_icon="📈", layout="centered")
@@ -48,35 +49,43 @@ with col_s:
     if s_p:
         st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
 
-# 2. Dhan / TradingView లైట్ థీమ్ చార్ట్ (Toolbox + Crosshair Cursor తో)
-def render_dhan_tv_chart(tv_symbol, interval="3"):
-    tv_html = f"""
-    <div class="tradingview-widget-container" style="height:500px;width:100%;">
-      <div id="tv_dhan_chart" style="height:100%;width:100%;"></div>
-      <script type="text/javascript" src="https://tradingview.com"></script>
-      <script type="text/javascript">
-      new TradingView.widget({{
-        "autosize": true,
-        "symbol": "{tv_symbol}",
-        "interval": "{interval}",
+# 2. TradingView కొత్త Advanced Chart విడ్జెట్ (iPad & Mobile సపోర్ట్‌తో)
+def render_advanced_tv_chart(tv_symbol, interval="3"):
+    config = {
+        "autosize": True,
+        "symbol": tv_symbol,
+        "interval": interval,
         "timezone": "Asia/Kolkata",
         "theme": "light",
         "style": "1",
         "locale": "en",
-        "toolbar_bg": "#f1f3f6",
-        "enable_publishing": false,
-        "hide_top_toolbar": false,
-        "hide_side_toolbar": false,
-        "allow_symbol_change": true,
-        "withdateranges": true,
-        "details": false,
-        "hotlist": false,
-        "calendar": false,
-        "studies": [],
-        "container_id": "tv_dhan_chart"
-      }});
-      </script>
-    </div>
+        "allow_symbol_change": True,
+        "hide_side_toolbar": False,
+        "hide_top_toolbar": False,
+        "withdateranges": True,
+        "calendar": False,
+        "support_host": "https://tradingview.com"
+    }
+    config_json = json.dumps(config)
+    
+    tv_html = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        html, body {{ margin: 0; padding: 0; height: 100%; width: 100%; overflow: hidden; }}
+      </style>
+    </head>
+    <body>
+      <div class="tradingview-widget-container" style="height:500px;width:100%;">
+        <div class="tradingview-widget-container__widget" style="height:calc(100% - 32px);width:100%;"></div>
+        <script type="text/javascript" src="https://tradingview.com" async>
+        {config_json}
+        </script>
+      </div>
+    </body>
+    </html>
     """
     components.html(tv_html, height=510)
 
@@ -106,7 +115,7 @@ with c2:
         format_func=lambda x: f"{x}m" if x.isdigit() else x
     )
 
-render_dhan_tv_chart(tv_symbols[tv_choice], tv_interval)
+render_advanced_tv_chart(tv_symbols[tv_choice], tv_interval)
 
 st.info(f"💰 **వర్చువల్ బ్యాలెన్స్ (Available Cash):** ₹ {st.session_state.cash:,.2f}")
 st.divider()
