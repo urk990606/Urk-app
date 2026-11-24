@@ -1,7 +1,7 @@
 import streamlit as st
-import yfinance as st_yf
+import streamlit.components.v1 as components
+import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
 from datetime import datetime
 
 st.set_page_config(page_title="URK Paper Trading", page_icon="📈", layout="centered")
@@ -16,19 +16,10 @@ if 'history' not in st.session_state:
 st.title("📈 URK")
 st.caption("Virtual Paper Trading App (₹0 Risk)")
 
-timeframes = {
-    "1m": ("1d", "1m"),
-    "3m": ("1d", "3m"),
-    "5m": ("1d", "5m"),
-    "15m": ("5d", "15m"),
-    "1h": ("1mo", "1h"),
-    "1D": ("6mo", "1d")
-}
-
 @st.cache_data(ttl=60)
 def get_index_price(symbol):
     try:
-        idx = st_yf.Ticker(symbol)
+        idx = yf.Ticker(symbol)
         hist_2d = idx.history(period="2d")
         if len(hist_2d) >= 2:
             prev_close = hist_2d['Close'].iloc[-2]
@@ -42,59 +33,7 @@ def get_index_price(symbol):
         pass
     return None, None, None
 
-@st.cache_data(ttl=60)
-def get_candle_data(symbol, period, interval):
-    try:
-        ticker_obj = st_yf.Ticker(symbol)
-        if interval == "3m":
-            df = ticker_obj.history(period="1d", interval="1m")
-            if not df.empty:
-                return df.resample('3min').agg({
-                    'Open': 'first',
-                    'High': 'max',
-                    'Low': 'min',
-                    'Close': 'last'
-                }).dropna()
-            return pd.DataFrame()
-        else:
-            df = ticker_obj.history(period=period, interval=interval)
-            return df[['Open', 'High', 'Low', 'Close']].dropna() if not df.empty else pd.DataFrame()
-    except Exception:
-        return pd.DataFrame()
-
-def plot_dhan_candlestick(df, title):
-    fig = go.Figure(data=[go.Candlestick(
-        x=df.index,
-        open=df['Open'],
-        high=df['High'],
-        low=df['Low'],
-        close=df['Close'],
-        increasing_line_color='#00E676',
-        decreasing_line_color='#FF5252',
-        increasing_fillcolor='#00E676',
-        decreasing_fillcolor='#FF5252',
-        name=title
-    )])
-    fig.update_xaxes(type='category', tickangle=-45, nticks=8, showgrid=True, gridcolor='#1E222D')
-    fig.update_yaxes(side='right', showgrid=True, gridcolor='#1E222D')
-    fig.update_layout(
-        title=dict(text=f"<b>{title}</b>", font=dict(size=14, color="#E0E0E0")),
-        template="plotly_dark",
-        paper_bgcolor="#0E1117",
-        plot_bgcolor="#0E1117",
-        xaxis_rangeslider_visible=False,
-        height=380,
-        margin=dict(l=10, r=10, t=35, b=20),
-        dragmode="pan"
-    )
-    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
-
-indices = {
-    "NIFTY 50": "^NSEI",
-    "BANK NIFTY": "^NSEBANK",
-    "BSE SENSEX": "^BSESN"
-}
-
+# 1. మూడు ఇండెక్స్‌ల లైవ్ ధరలు
 col_n, col_b, col_s = st.columns(3)
 with col_n:
     n_p, n_c, n_pct = get_index_price("^NSEI")
@@ -109,20 +48,71 @@ with col_s:
     if s_p:
         st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
 
-with st.expander("📊 క్యాండిల్‌స్టిక్ చార్ట్ (NIFTY 50 / BANK NIFTY / SENSEX)", expanded=True):
-    selected_idx_name = st.radio("ఇండెక్స్:", list(indices.keys()), horizontal=True)
-    selected_tf = st.radio("టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1, horizontal=True)
-    p_val, i_val = timeframes[selected_tf]
-    candle_df = get_candle_data(indices[selected_idx_name], p_val, i_val)
-    if not candle_df.empty:
-        plot_dhan_candlestick(candle_df, f"{selected_idx_name} ({selected_tf})")
-    else:
-        st.info("ప్రస్తుతం ఈ టైమ్ ఫ్రేమ్‌కు క్యాండిల్ డేటా అందుబాటులో లేదు.")
+# 2. Dhan / TradingView లైట్ థీమ్ చార్ట్ (Toolbox + Crosshair Cursor తో)
+def render_dhan_tv_chart(tv_symbol, interval="3"):
+    tv_html = f"""
+    <div class="tradingview-widget-container" style="height:500px;width:100%;">
+      <div id="tv_dhan_chart" style="height:100%;width:100%;"></div>
+      <script type="text/javascript" src="https://tradingview.com"></script>
+      <script type="text/javascript">
+      new TradingView.widget({{
+        "autosize": true,
+        "symbol": "{tv_symbol}",
+        "interval": "{interval}",
+        "timezone": "Asia/Kolkata",
+        "theme": "light",
+        "style": "1",
+        "locale": "en",
+        "toolbar_bg": "#f1f3f6",
+        "enable_publishing": false,
+        "hide_top_toolbar": false,
+        "hide_side_toolbar": false,
+        "allow_symbol_change": true,
+        "withdateranges": true,
+        "details": false,
+        "hotlist": false,
+        "calendar": false,
+        "studies": [],
+        "container_id": "tv_dhan_chart"
+      }});
+      </script>
+    </div>
+    """
+    components.html(tv_html, height=510)
+
+st.subheader("📊 TradingView చార్ట్ (Toolbox & Cursor)")
+
+tv_symbols = {
+    "BSE SENSEX (Index)": "BSE:SENSEX",
+    "SBIN (NSE)": "NSE:SBIN",
+    "RELIANCE (NSE)": "NSE:RELIANCE",
+    "TCS (NSE)": "NSE:TCS",
+    "HDFC BANK (NSE)": "NSE:HDFCBANK",
+    "ICICI BANK (NSE)": "NSE:ICICIBANK",
+    "INFOSYS (NSE)": "NSE:INFY",
+    "TATA MOTORS (NSE)": "NSE:TATAMOTORS",
+    "AXIS BANK (NSE)": "NSE:AXISBANK",
+    "BAJAJ FINANCE (NSE)": "NSE:BAJFINANCE"
+}
+
+c1, c2 = st.columns()
+with c1:
+    tv_choice = st.selectbox("చార్ట్ సింబల్:", list(tv_symbols.keys()))
+with c2:
+    tv_interval = st.selectbox(
+        "టైమ్ ఫ్రేమ్:",
+        ["1", "3", "5", "15", "30", "60", "D"],
+        index=1,
+        format_func=lambda x: f"{x}m" if x.isdigit() else x
+    )
+
+render_dhan_tv_chart(tv_symbols[tv_choice], tv_interval)
 
 st.info(f"💰 **వర్చువల్ బ్యాలెన్స్ (Available Cash):** ₹ {st.session_state.cash:,.2f}")
 st.divider()
 
-st.subheader("📊 ట్రేడింగ్ కోసం స్టాక్ ఎంచుకోండి")
+# 3. ట్రేడింగ్ కోసం స్టాక్ ఎంచుకోండి
+st.subheader("📊 ఆర్డర్ ప్లేస్ చేయండి (Buy / Sell)")
 
 stocks_list = {
     "SBIN - NSE (State Bank of India)": "SBIN.NS",
@@ -146,7 +136,7 @@ qty = st.number_input("క్వాంటిటీ (షేర్ల సంఖ్
 @st.cache_data(ttl=30)
 def get_stock_price(symbol):
     try:
-        stock = st_yf.Ticker(symbol)
+        stock = yf.Ticker(symbol)
         data = stock.history(period="1d", interval="1m")
         if not data.empty:
             return round(data['Close'].iloc[-1], 2)
@@ -159,16 +149,10 @@ live_price = get_stock_price(ticker)
 if live_price:
     st.write(f"**{selected_name} లైవ్ ధర**")
     st.markdown(f"## ₹ {live_price:,.2f}")
-    with st.expander(f"🕯️ {selected_name} క్యాండిల్‌స్టిక్ చార్ట్ చూడండి"):
-        s_tf = st.radio("స్టాక్ టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1, horizontal=True, key="s_tf")
-        sp_val, si_val = timeframes[s_tf]
-        s_candle_df = get_candle_data(ticker, sp_val, si_val)
-        if not s_candle_df.empty:
-            plot_dhan_candlestick(s_candle_df, f"{selected_name} ({s_tf})")
 else:
     st.warning("ప్రస్తుతం లైవ్ ధర లోడ్ అవ్వడం లేదు. మళ్ళీ ప్రయత్నించండి.")
 
-if st.button("🔄 ధరలు & క్యాండిల్స్ రిఫ్రెష్ చేయండి (Refresh)"):
+if st.button("🔄 ధరలు రిఫ్రెష్ చేయండి (Refresh)"):
     st.cache_data.clear()
     st.rerun()
 
