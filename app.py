@@ -95,7 +95,7 @@ tv_symbols = {
     "BAJAJ FINANCE (NSE)": "NSE:BAJFINANCE"
 }
 
-c1, c2 = st.columns()
+c1, c2 = st.columns(2)
 with c1:
     tv_choice = st.selectbox("చార్ట్ సింబల్:", list(tv_symbols.keys()))
 with c2:
