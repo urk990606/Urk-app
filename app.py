@@ -1,12 +1,13 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import plotly.graph_objects as go
 from datetime import datetime
 
 # పేజీ సెట్టింగ్స్
 st.set_page_config(page_title="URK Paper Trading", page_icon="📈", layout="centered")
 
-# సెషన్ స్టేట్ (డబ్బు, పోర్ట్‌ఫోలియో, ఆర్డర్ హిస్టరీ స్టోర్ చేయడానికి)
+# సెషన్ స్టేట్
 if 'cash' not in st.session_state:
     st.session_state.cash = 100000.00
 if 'portfolio' not in st.session_state:
@@ -18,56 +19,152 @@ if 'history' not in st.session_state:
 st.title("📈 URK")
 st.caption("Virtual Paper Trading App (₹0 Risk)")
 
-# 1. NIFTY 50 లైవ్ ఇండెక్స్ డేటా తెచ్చే ఫంక్షన్
-@st.cache_data(ttl=60) # ప్రతి 60 సెకన్లకు డేటా అప్‌డేట్ అవుతుంది
-def get_nifty_data():
+# టైమ్ ఫ్రేమ్ సెట్టింగ్స్ (3m తో సహా)
+timeframes = {
+    "1m": ("1d", "1m"),
+    "3m": ("1d", "3m"),
+    "5m": ("1d", "5m"),
+    "15m": ("5d", "15m"),
+    "1h": ("1mo", "1h"),
+    "1D": ("6mo", "1d")
+}
+
+# ఇండెక్స్ లైవ్ ధర తెచ్చే ఫంక్షన్
+@st.cache_data(ttl=60)
+def get_index_price(symbol):
     try:
-        nifty = yf.Ticker("^NSEI")
-        hist = nifty.history(period="2d")
-        if len(hist) >= 2:
-            prev_close = hist['Close'].iloc[-2]
-            curr_price = hist['Close'].iloc[-1]
+        idx = yf.Ticker(symbol)
+        hist_2d = idx.history(period="2d")
+        if len(hist_2d) >= 2:
+            prev_close = hist_2d['Close'].iloc[-2]
+            curr_price = hist_2d['Close'].iloc[-1]
             change = curr_price - prev_close
             pct = (change / prev_close) * 100
             return round(curr_price, 2), round(change, 2), round(pct, 2)
-        elif len(hist) == 1:
-            return round(hist['Close'].iloc[-1], 2), 0.0, 0.0
+        elif len(hist_2d) == 1:
+            return round(hist_2d['Close'].iloc[-1], 2), 0.0, 0.0
     except Exception:
         pass
     return None, None, None
 
-# Nifty 50 బ్యానర్ చూపించడం
-nifty_price, nifty_chg, nifty_pct = get_nifty_data()
-if nifty_price:
-    st.metric(
-        label="📊 NIFTY 50 (NSE Live)",
-        value=f"₹ {nifty_price:,.2f}",
-        delta=f"{nifty_chg:+.2f} ({nifty_pct:+.2f}%)"
+# OHLC (Open, High, Low, Close) క్యాండిల్ డేటా తెచ్చే ఫంక్షన్
+@st.cache_data(ttl=60)
+def get_candle_data(symbol, period, interval):
+    try:
+        ticker_obj = yf.Ticker(symbol)
+        if interval == "3m":
+            df = ticker_obj.history(period="1d", interval="1m")
+            if not df.empty:
+                df_3m = df.resample('3min').agg({
+                    'Open': 'first',
+                    'High': 'max',
+                    'Low': 'min',
+                    'Close': 'last'
+                }).dropna()
+                return df_3m
+            return pd.DataFrame()
+        else:
+            df = ticker_obj.history(period=period, interval=interval)
+            return df[['Open', 'High', 'Low', 'Close']].dropna() if not df.empty else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+# Dhan తరహా డార్క్ క్యాండిల్‌స్టిక్ చార్ట్ గీసే ఫంక్షన్
+def plot_dhan_candlestick(df, title):
+    fig = go.Figure(data=[go.Candlestick(
+        x=df.index,
+        open=df['Open'],
+        high=df['High'],
+        low=df['Low'],
+        close=df['Close'],
+        increasing_line_color='#00E676',  # Dhan గ్రీన్ క్యాండిల్
+        decreasing_line_color='#FF5252',  # Dhan రెడ్ క్యాండిల్
+        increasing_fillcolor='#00E676',
+        decreasing_fillcolor='#FF5252',
+        name=title
+    )])
+    
+    # మార్కెట్ లేని సమయాల్లో ఖాళీ గ్యాప్స్ తీసేయడానికి
+    fig.update_xaxes(
+        type='category',
+        tickangle=-45,
+        nticks=8,
+        showgrid=True,
+        gridcolor='#1E222D'
     )
+    fig.update_yaxes(
+        side='right', # కుడి వైపు ధర స్కేల్ (Dhan / TradingView లాగా)
+        showgrid=True,
+        gridcolor='#1E222D'
+    )
+    fig.update_layout(
+        title=dict(text=f"<b>{title}</b>", font=dict(size=14, color="#E0E0E0")),
+        template="plotly_dark",
+        paper_bgcolor="#0E1117",
+        plot_bgcolor="#0E1117",
+        xaxis_rangeslider_visible=False,
+        height=380,
+        margin=dict(l=10, r=10, t=35, b=20),
+        dragmode="pan"
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True})
+
+# 1. మూడు ఇండెక్స్‌ల లైవ్ ధరలు
+indices = {
+    "NIFTY 50": "^NSEI",
+    "BANK NIFTY": "^NSEBANK",
+    "BSE SENSEX": "^BSESN"
+}
+
+col_n, col_b, col_s = st.columns(3)
+with col_n:
+    n_p, n_c, n_pct = get_index_price("^NSEI")
+    if n_p: st.metric("NIFTY 50", f"₹{n_p:,.0f}", f"{n_c:+.1f} ({n_pct:+.2f}%)")
+with col_b:
+    b_p, b_c, b_pct = get_index_price("^NSEBANK")
+    if b_p: st.metric("BANK NIFTY", f"₹{b_p:,.0f}", f"{b_c:+.1f} ({b_pct:+.2f}%)")
+with col_s:
+    s_p, s_c, s_pct = get_index_price("^BSESN")
+    if s_p: st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
+
+# 2. Dhan తరహా క్యాండిల్‌స్టిక్ చార్ట్ సెక్షన్
+with st.expander("📊 క్యాండిల్‌స్టిక్ చార్ట్ (NIFTY 50 / BANK NIFTY / SENSEX)", expanded=True):
+    selected_idx_name = st.radio("ఇండెక్స్:", list(indices.keys()), horizontal=True)
+    selected_tf = st.radio("టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1, horizontal=True)
+    
+    p_val, i_val = timeframes[selected_tf]
+    candle_df = get_candle_data(indices[selected_idx_name], p_val, i_val)
+    
+    if not candle_df.empty:
+        plot_dhan_candlestick(candle_df, f"{selected_idx_name} ({selected_tf})")
+    else:
+        st.info("ప్రస్తుతం ఈ టైమ్ ఫ్రేమ్‌కు క్యాండిల్ డేటా అందుబాటులో లేదు.")
 
 # వర్చువల్ బ్యాలెన్స్ బాక్స్
 st.info(f"💰 **వర్చువల్ బ్యాలెన్స్ (Available Cash):** ₹ {st.session_state.cash:,.2f}")
 
 st.divider()
 
-# 2. స్టాక్ ఎంచుకోండి (Nifty 50 స్టాక్స్)
-st.subheader("📊 స్టాక్ ఎంచుకోండి")
+# 3. స్టాక్ ఎంచుకోండి (NSE & BSE స్టాక్స్)
+st.subheader("📊 ట్రేడింగ్ కోసం స్టాక్ ఎంచుకోండి")
 
-nifty_stocks = {
-    "SBIN (State Bank of India)": "SBIN.NS",
-    "RELIANCE (Reliance Industries)": "RELIANCE.NS",
-    "TCS (Tata Consultancy Services)": "TCS.NS",
-    "HDFCBANK (HDFC Bank)": "HDFCBANK.NS",
-    "ICICIBANK (ICICI Bank)": "ICICIBANK.NS",
-    "INFY (Infosys)": "INFY.NS",
-    "BHARTIARTL (Bharti Airtel)": "BHARTIARTL.NS",
-    "ITC (ITC Limited)": "ITC.NS",
-    "LT (Larsen & Toubro)": "LT.NS",
-    "TATAMOTORS (Tata Motors)": "TATAMOTORS.NS"
+stocks_list = {
+    "SBIN - NSE (State Bank of India)": "SBIN.NS",
+    "SBIN - BSE (State Bank of India)": "SBIN.BO",
+    "RELIANCE - NSE (Reliance Industries)": "RELIANCE.NS",
+    "RELIANCE - BSE (Reliance Industries)": "RELIANCE.BO",
+    "TCS - NSE (Tata Consultancy Services)": "TCS.NS",
+    "HDFCBANK - NSE (HDFC Bank)": "HDFCBANK.NS",
+    "ICICIBANK - NSE (ICICI Bank)": "ICICIBANK.NS",
+    "INFY - NSE (Infosys)": "INFY.NS",
+    "BHARTIARTL - NSE (Bharti Airtel)": "BHARTIARTL.NS",
+    "ITC - NSE (ITC Limited)": "ITC.NS",
+    "LT - NSE (Larsen & Toubro)": "LT.NS",
+    "TATAMOTORS - NSE (Tata Motors)": "TATAMOTORS.NS"
 }
 
-selected_name = st.selectbox("స్టాక్ పేరు:", list(nifty_stocks.keys()))
-ticker = nifty_stocks[selected_name]
+selected_name = st.selectbox("స్టాక్ పేరు:", list(stocks_list.keys()))
+ticker = stocks_list[selected_name]
 
 qty = st.number_input("క్వాంటిటీ (షేర్ల సంఖ్య):", min_value=1, value=10, step=1)
 
@@ -88,11 +185,19 @@ live_price = get_stock_price(ticker)
 if live_price:
     st.write(f"**{selected_name} లైవ్ ధర**")
     st.markdown(f"## ₹ {live_price:,.2f}")
+    
+    # స్టాక్ క్యాండిల్ చార్ట్
+    with st.expander(f"🕯️ {selected_name} క్యాండిల్‌స్టిక్ చార్ట్ చూడండి"):
+        s_tf = st.radio("స్టాక్ టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1, horizontal=True, key="s_tf")
+        sp_val, si_val = timeframes[s_tf]
+        s_candle_df = get_candle_data(ticker, sp_val, si_val)
+        if not s_candle_df.empty:
+            plot_dhan_candlestick(s_candle_df, f"{selected_name} ({s_tf})")
 else:
     st.warning("ప్రస్తుతం లైవ్ ధర లోడ్ అవ్వడం లేదు. మళ్ళీ ప్రయత్నించండి.")
 
-# రిఫ్రెష్ బటన్ (తాజా ధర కోసం)
-if st.button("🔄 ధర రిఫ్రెష్ చేయండి (Refresh Price)"):
+# రిఫ్రెష్ బటన్
+if st.button("🔄 ధరలు & క్యాండిల్స్ రిఫ్రెష్ చేయండి (Refresh)"):
     st.cache_data.clear()
     st.rerun()
 
@@ -148,12 +253,12 @@ with col2:
 
 st.divider()
 
-# 3. పోర్ట్‌ఫోలియో (Holdings & P&L)
+# 4. పోర్ట్‌ఫోలియో (Holdings & P&L)
 st.subheader("💼 నా పోర్ట్‌ఫోలియో (Holdings & P&L)")
 if st.session_state.portfolio:
     port_data = []
     for s_name, info in st.session_state.portfolio.items():
-        curr_p = get_stock_price(nifty_stocks[s_name]) or info['avg_price']
+        curr_p = get_stock_price(stocks_list[s_name]) or info['avg_price']
         pnl = (curr_p - info['avg_price']) * info['qty']
         port_data.append({
             "స్టాక్": s_name,
@@ -166,9 +271,8 @@ if st.session_state.portfolio:
 else:
     st.write("ప్రస్తుతం మీ పోర్ట్‌ఫోలియోలో షేర్లు ఏవీ లేవు.")
 
-# 4. ఆర్డర్ హిస్టరీ
+# 5. ఆర్డర్ హిస్టరీ
 with st.expander("📜 ఆర్డర్ హిస్టరీ (Trade Book)"):
     if st.session_state.history:
         st.table(pd.DataFrame(st.session_state.history))
     else:
-        st.write("ఇంకా ఎలాంటి ట్రేడ్స్ జరగలేదు.")
