@@ -284,7 +284,11 @@ with page_hold:
     st.subheader("💼 నా Holdings & Positions")
     if st.session_state.holdings:
         for h_name, info in list(st.session_state.holdings.items()):
-            cp = opt_prices.get(h_name, info['ltp']) if info['is_opt'] else (get_quote(MASTER_SYMBOLS.get(h_name, h_name)) or info['avg'])
+            if info['is_opt']:
+                cp = opt_prices.get(h_name, info['ltp'])
+            else:
+                qp, _, _ = get_quote(MASTER_SYMBOLS.get(h_name, h_name))
+                cp = qp if qp else info['avg']
             pnl = (cp - info['avg']) * info['qty']
             hc1, hc2, hc3, hc4 = st.columns([3, 2, 2, 1.5])
             hc1.write(f"**{h_name}** (Qty: {info['qty']} | Avg: ₹{info['avg']})")
@@ -296,7 +300,14 @@ with page_hold:
 
 with page_pnl:
     st.subheader("💰 P&L Report & Trade Book")
-    unreal = sum(((opt_prices.get(k, v['ltp']) if v['is_opt'] else (get_quote(MASTER_SYMBOLS.get(k, k)) or v['avg'])) - v['avg']) * v['qty'] for k, v in st.session_state.holdings.items())
+    unreal = 0.0
+    for k, v in st.session_state.holdings.items():
+        if v['is_opt']:
+            cp = opt_prices.get(k, v['ltp'])
+        else:
+            qp, _, _ = get_quote(MASTER_SYMBOLS.get(k, k))
+            cp = qp if qp else v['avg']
+        unreal += (cp - v['avg']) * v['qty']
     p1, p2, p3 = st.columns(3)
     p1.metric("💵 Realized P&L", f"₹ {st.session_state.realized_pnl:+.2f}")
     p2.metric("⏳ Unrealized P&L", f"₹ {unreal:+.2f}")
@@ -308,3 +319,4 @@ with page_pnl:
         st.rerun()
 
 # END OF URK APP
+    
