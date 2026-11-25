@@ -7,7 +7,9 @@ from datetime import datetime
 
 st.set_page_config(page_title="URK Paper Trading", page_icon="📈", layout="wide")
 
+# ==========================================
 # 1. LOGIN / LOGOUT సిస్టమ్
+# ==========================================
 VALID_USERS = {
     "urk": "1234",
     "friend": "5678"
@@ -36,25 +38,42 @@ if not st.session_state.logged_in:
                     st.error("❌ తప్పు Username లేదా Password!")
     st.stop()
 
-# 2. సెషన్ స్టేట్
+# ==========================================
+# 2. సెషన్ స్టేట్ (Cash, Holdings, Watchlist 1-3, P&L)
+# ==========================================
 if 'cash' not in st.session_state:
     st.session_state.cash = 100000.00
-if 'portfolio' not in st.session_state:
-    st.session_state.portfolio = {}
+if 'holdings' not in st.session_state:
+    st.session_state.holdings = {}
 if 'history' not in st.session_state:
     st.session_state.history = []
+if 'realized_pnl' not in st.session_state:
+    st.session_state.realized_pnl = 0.0
+if 'wl_1' not in st.session_state:
+    st.session_state.wl_1 = ["NIFTY 50", "BANK NIFTY", "BSE SENSEX", "SBIN.NS", "RELIANCE.NS"]
+if 'wl_2' not in st.session_state:
+    st.session_state.wl_2 = ["TCS.NS", "INFY.NS", "HDFCBANK.NS", "ICICIBANK.NS"]
+if 'wl_3' not in st.session_state:
+    st.session_state.wl_3 = ["TATAMOTORS.NS", "BAJFINANCE.NS", "LT.NS", "AXISBANK.NS"]
 
-# హెడర్ & Logout బటన్
-h1, h2 = st.columns([4, 1])
-with h1:
-    st.title("📈 URK")
-    st.caption(f"Welcome, **{st.session_state.username.upper()}** | Virtual Paper Trading")
-with h2:
-    st.write("")
-    if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.username = ""
-        st.rerun()
+# మాస్టర్ స్టాక్స్ & ఇండెక్స్ లిస్ట్
+MASTER_SYMBOLS = {
+    "NIFTY 50": "^NSEI",
+    "BANK NIFTY": "^NSEBANK",
+    "BSE SENSEX": "^BSESN",
+    "SBIN.NS": "SBIN.NS",
+    "RELIANCE.NS": "RELIANCE.NS",
+    "TCS.NS": "TCS.NS",
+    "HDFCBANK.NS": "HDFCBANK.NS",
+    "ICICIBANK.NS": "ICICIBANK.NS",
+    "INFY.NS": "INFY.NS",
+    "TATAMOTORS.NS": "TATAMOTORS.NS",
+    "BAJFINANCE.NS": "BAJFINANCE.NS",
+    "LT.NS": "LT.NS",
+    "AXISBANK.NS": "AXISBANK.NS",
+    "ITC.NS": "ITC.NS",
+    "BHARTIARTL.NS": "BHARTIARTL.NS"
+}
 
 timeframes = {
     "1m": ("1d", "1m"),
@@ -65,8 +84,11 @@ timeframes = {
     "1D": ("6mo", "1d")
 }
 
-@st.cache_data(ttl=60)
-def get_index_price(symbol):
+# ==========================================
+# 3. డేటా ఫంక్షన్లు
+# ==========================================
+@st.cache_data(ttl=45)
+def get_quote(symbol):
     try:
         hist = yf.Ticker(symbol).history(period="2d")
         if len(hist) >= 2:
@@ -103,7 +125,7 @@ def calculate_ut_bot(df, key_value=1.0, atr_period=10):
     
     c_vals, nl_vals = close.values, n_loss.values
     stop = np.zeros(len(df))
-    stop[0] = c_vals[0]
+    stop = c_vals
     
     for i in range(1, len(df)):
         ps, c, pc, nl = stop[i-1], c_vals[i], c_vals[i-1], nl_vals[i]
@@ -121,7 +143,7 @@ def calculate_ut_bot(df, key_value=1.0, atr_period=10):
     df['Sell_Sig'] = (close < df['UT_Stop']) & (close.shift(1) >= df['UT_Stop'].shift(1))
     return df
 
-def render_chart(df, title, show_ut=True, key_val=1.0, atr_per=10, show_ema=False):
+def render_chart(df, title, show_ut=True, key_val=1.0, atr_per=10, show_ema=True):
     df = calculate_ut_bot(df, key_value=key_val, atr_period=atr_per)
     total = len(df)
     start_idx = max(0, total - 65)
@@ -146,92 +168,55 @@ def render_chart(df, title, show_ut=True, key_val=1.0, atr_per=10, show_ema=Fals
             
     if show_ema:
         df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
+        df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
         fig.add_trace(go.Scatter(x=x_lbl, y=df['EMA9'], mode='lines', name='9 EMA', line=dict(color='#2962FF', width=1.5)))
+        fig.add_trace(go.Scatter(x=x_lbl, y=df['EMA20'], mode='lines', name='20 EMA', line=dict(color='#FF6D00', width=1.5)))
         
     vis = df.iloc[start_idx:]
     fig.update_xaxes(type='category', range=[start_idx - 0.5, total + 2], nticks=6, showgrid=True, gridcolor='#F0F3FA', showspikes=True, spikemode='across', spikesnap='cursor')
     fig.update_yaxes(side='right', range=[vis['Low'].min()*0.998, vis['High'].max()*1.002], showgrid=True, gridcolor='#F0F3FA', showspikes=True, spikemode='across', spikesnap='cursor')
-    fig.update_layout(title=dict(text=f"<b>{title}</b>", font=dict(size=15)), template="plotly_white", xaxis_rangeslider_visible=False, height=500, margin=dict(l=10, r=50, t=40, b=20), hovermode="x unified", dragmode="pan")
+    fig.update_layout(title=dict(text=f"<b>{title}</b>", font=dict(size=15)), template="plotly_white", xaxis_rangeslider_visible=False, height=480, margin=dict(l=10, r=50, t=40, b=20), hovermode="x unified", dragmode="pan")
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displaylogo': False, 'modeBarButtonsToAdd': ['drawline', 'drawrect', 'eraseshape']})
 
-# ఇండెక్స్ ధరలు
-cn, cb, cs = st.columns(3)
-n_p, n_c, n_pct = get_index_price("^NSEI")
-b_p, b_c, b_pct = get_index_price("^NSEBANK")
-s_p, s_c, s_pct = get_index_price("^BSESN")
+# ఆర్డర్ ఎగ్జిక్యూషన్ ఫంక్షన్
+def execute_trade(side, item_name, qty, price, is_option=False):
+    total_val = round(qty * price, 2)
+    if side == "BUY":
+        if st.session_state.cash >= total_val:
+            st.session_state.cash -= total_val
+            if item_name in st.session_state.holdings:
+                old_q = st.session_state.holdings[item_name]['qty']
+                old_a = st.session_state.holdings[item_name]['avg']
+                new_q = old_q + qty
+                new_a = ((old_q * old_a) + total_val) / new_q
+                st.session_state.holdings[item_name]['qty'] = new_q
+                st.session_state.holdings[item_name]['avg'] = round(new_a, 2)
+            else:
+                st.session_state.holdings[item_name] = {'qty': qty, 'avg': price, 'is_opt': is_option, 'ltp': price}
+            st.session_state.history.append({"సమయం": datetime.now().strftime("%H:%M:%S"), "రకం": "BUY", "పేరు": item_name, "క్వాంటిటీ": qty, "ధర": price, "P&L": 0.0})
+            st.success(f"✅ {item_name} ({qty} Qty) @ ₹{price} కొనుగోలు పూర్తయింది!")
+            st.rerun()
+        else:
+            st.error("❌ సరిపడా వర్చువల్ క్యాష్ లేదు!")
+    elif side == "SELL":
+        if item_name in st.session_state.holdings and st.session_state.holdings[item_name]['qty'] >= qty:
+            avg_buy = st.session_state.holdings[item_name]['avg']
+            trade_pnl = round((price - avg_buy) * qty, 2)
+            st.session_state.realized_pnl += trade_pnl
+            st.session_state.cash += total_val
+            st.session_state.holdings[item_name]['qty'] -= qty
+            if st.session_state.holdings[item_name]['qty'] == 0:
+                del st.session_state.holdings[item_name]
+            st.session_state.history.append({"సమయం": datetime.now().strftime("%H:%M:%S"), "రకం": "SELL", "పేరు": item_name, "క్వాంటిటీ": qty, "ధర": price, "P&L": trade_pnl})
+            st.success(f"✅ {item_name} ({qty} Qty) @ ₹{price} అమ్మేశారు! P&L: ₹{trade_pnl:+.2f}")
+            st.rerun()
+        else:
+            st.error("❌ మీ Holdings లో ఇన్ని షేర్లు/లాట్లు లేవు!")
 
-with cn:
-    if n_p: st.metric("NIFTY 50", f"₹{n_p:,.0f}", f"{n_c:+.1f} ({n_pct:+.2f}%)")
-with cb:
-    if b_p: st.metric("BANK NIFTY", f"₹{b_p:,.0f}", f"{b_c:+.1f} ({b_pct:+.2f}%)")
-with cs:
-    if s_p: st.metric("BSE SENSEX", f"₹{s_p:,.0f}", f"{s_c:+.1f} ({s_pct:+.2f}%)")
-
-# చార్ట్ & UT Bot Alerts
-with st.expander("📊 ప్రో క్యాండిల్‌స్టిక్ చార్ట్ + UT Bot Alerts (ఓపెన్ / క్లోజ్)", expanded=True):
-    c_opts = {"NIFTY 50": "^NSEI", "BANK NIFTY": "^NSEBANK", "BSE SENSEX": "^BSESN", "SBIN": "SBIN.NS", "RELIANCE": "RELIANCE.NS", "TCS": "TCS.NS"}
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        sel_c = st.selectbox("సింబల్:", list(c_opts.keys()))
-    with c2:
-        sel_tf = st.selectbox("టైమ్ ఫ్రేమ్:", list(timeframes.keys()), index=1)
-    with c3:
-        ut_k = st.number_input("UT Key:", min_value=0.5, max_value=10.0, value=1.0, step=0.5)
-    with c4:
-        ut_a = st.number_input("UT ATR:", min_value=1, max_value=50, value=10, step=1)
-        
-    t1, t2 = st.columns(2)
-    with t1:
-        show_ut = st.checkbox("🤖 UT Bot Alerts (BUY/SELL)", value=True)
-    with t2:
-        show_ema = st.checkbox("📈 9 EMA లైన్", value=False)
-        
-    pv, iv = timeframes[sel_tf]
-    cdf = get_candle_data(c_opts[sel_c], pv, iv)
-    if not cdf.empty:
-        render_chart(cdf, f"{sel_c} • {sel_tf}", show_ut=show_ut, key_val=ut_k, atr_per=ut_a, show_ema=show_ema)
-
-st.info(f"💰 **వర్చువల్ బ్యాలెన్స్:** ₹ {st.session_state.cash:,.2f}")
-
-# Option Chain & Stocks Tabs
-tab_opt, tab_stk = st.tabs(["⛓️ Option Chain (CE / PE)", "📈 Stocks Trading (EQ)"])
-
-with tab_opt:
-    st.subheader("⛓️ Option Chain")
-    opt_idx = {
-        "NIFTY 50": {"spot": n_p or 25350, "step": 50, "lot": 75, "iv": 115},
-        "BANK NIFTY": {"spot": b_p or 62585, "step": 100, "lot": 30, "iv": 280},
-        "BSE SENSEX": {"spot": s_p or 82436, "step": 100, "lot": 20, "iv": 310}
-    }
-    s_opt = st.selectbox("ఇండెక్స్:", list(opt_idx.keys()))
-    info = opt_idx[s_opt]
-    atm = round(info["spot"] / info["step"]) * info["step"]
-    strikes = [atm + (i * info["step"]) for i in range(-6, 7)]
-    
-    rows = []
-    for st_p in strikes:
-        diff = info["spot"] - st_p
-        ce = round(max(0, diff) + max(5.0, info["iv"] * np.exp(-abs(diff) / (info["step"] * 4.5))), 2)
-        pe = round(max(0, -diff) + max(5.0, info["iv"] * np.exp(-abs(diff) / (info["step"] * 4.5))), 2)
-        rows.append({"CALL LTP": ce, "STRIKE": f"{st_p} (ATM)" if st_p == atm else f"{st_p}", "PUT LTP": pe})
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-with tab_stk:
-    st.subheader("📊 స్టాక్ ఆర్డర్")
-    s_list = {"SBIN": "SBIN.NS", "RELIANCE": "RELIANCE.NS", "TCS": "TCS.NS", "HDFCBANK": "HDFCBANK.NS"}
-    s_name = st.selectbox("స్టాక్:", list(s_list.keys()))
-    qty = st.number_input("క్వాంటిటీ:", min_value=1, value=10, step=1)
-    
-    @st.cache_data(ttl=30)
-    def get_sp(sym):
-        try:
-            d = yf.Ticker(sym).history(period="1d", interval="1m")
-            return round(d['Close'].iloc[-1], 2) if not d.empty else None
-        except Exception:
-            return None
-            
-    lp = get_sp(s_list[s_name])
-    if lp:
-        st.markdown(f"### ₹ {lp:,.2f}")
-
-# END OF URK APP
+# ==========================================
+# 4. టాప్ హెడర్ & నావిగేషన్ మెనూ
+# ==========================================
+h1, h2, h3 = st.columns([3, 2, 1])
+with h1:
+    st.title("📈 URK")
+with h2:
