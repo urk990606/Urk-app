@@ -9,13 +9,9 @@ from datetime import datetime
 
 st.set_page_config(page_title="URK Paper Trading", page_icon="📈", layout="centered")
 
-# Password Hashing Function (SHA-256)
 def hash_password(password):
     return hashlib.sha256(str.encode(password)).hexdigest()
 
-# ==========================================
-# SECURE USER DATABASE & AUTH STATE
-# ==========================================
 if 'users_db' not in st.session_state:
     st.session_state.users_db = {
         "admin": {
@@ -40,9 +36,6 @@ if 'login_attempts' not in st.session_state:
 if 'lockout_until' not in st.session_state:
     st.session_state.lockout_until = 0
 
-# ==========================================
-# LOGIN / SIGNUP SCREEN WITH BRUTE-FORCE LOCK
-# ==========================================
 if st.session_state.logged_in_user is None:
     st.title("📈 URK Paper Trading")
     st.caption("Secure Virtual Paper Trading App (₹0 Risk)")
@@ -59,6 +52,7 @@ if st.session_state.logged_in_user is None:
         st.subheader("మీ అకౌంట్‌లోకి లాగిన్ అవ్వండి")
         login_user = st.text_input("యూజర్‌నేమ్ (Username):", key="l_user").strip()
         login_pass = st.text_input("పాస్‌వర్డ్ (Password):", type="password", key="l_pass")
+        st.caption("💡 డెమో లాగిన్: Username = `admin` | Password = `Urk@2026`")
 
         if st.button("Login", use_container_width=True, type="primary"):
             if login_user in st.session_state.users_db and st.session_state.users_db[login_user]["password"] == hash_password(login_pass):
@@ -106,16 +100,10 @@ if st.session_state.logged_in_user is None:
 
     st.stop()
 
-# ==========================================
-# TECHNICAL INDICATORS CALCULATION
-# ==========================================
 def calculate_indicators(df, ut_key=1.0, ut_atr_period=10, st_period=10, st_mult=3.0):
     df = df.copy()
-    
-    # 1. 9 EMA
     df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
     
-    # 2. VWAP (Session/Daily Reset)
     tp = (df['High'] + df['Low'] + df['Close']) / 3
     vol = df['Volume'].replace(0, np.nan).fillna(1)
     df['Date'] = df.index.date
@@ -123,13 +111,11 @@ def calculate_indicators(df, ut_key=1.0, ut_atr_period=10, st_period=10, st_mult
     df['Cum_Vol'] = vol.groupby(df['Date']).cumsum()
     df['VWAP'] = df['Cum_TP_Vol'] / df['Cum_Vol']
     
-    # True Range (TR)
     high_low = df['High'] - df['Low']
     high_close = (df['High'] - df['Close'].shift(1)).abs()
     low_close = (df['Low'] - df['Close'].shift(1)).abs()
     tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
     
-    # 3. Supertrend
     atr_st = tr.ewm(alpha=1/st_period, adjust=False).mean()
     hl2 = (df['High'] + df['Low']) / 2
     upperband = hl2 + (st_mult * atr_st)
@@ -165,12 +151,10 @@ def calculate_indicators(df, ut_key=1.0, ut_atr_period=10, st_period=10, st_mult
     df['ST_Up'] = np.where(df['ST_Dir'] == 1, df['Supertrend'], np.nan)
     df['ST_Down'] = np.where(df['ST_Dir'] == -1, df['Supertrend'], np.nan)
     
-    # 4. UT Bot Alerts
     atr_ut = tr.ewm(alpha=1/ut_atr_period, adjust=False).mean()
     nLoss = ut_key * atr_ut
     src = df['Close']
     xATRTrailingStop = [0.0] * len(df)
-    pos = [0] * len(df)
     
     for i in range(1, len(df)):
         prev_stop = xATRTrailingStop[i-1]
@@ -183,26 +167,16 @@ def calculate_indicators(df, ut_key=1.0, ut_atr_period=10, st_period=10, st_mult
         else:
             xATRTrailingStop[i] = src.iloc[i] + nLoss.iloc[i]
             
-        if src.iloc[i-1] < prev_stop and src.iloc[i] > prev_stop:
-            pos[i] = 1
-        elif src.iloc[i-1] > prev_stop and src.iloc[i] < prev_stop:
-            pos[i] = -1
-        else:
-            pos[i] = pos[i-1]
-            
     df['UT_Stop'] = xATRTrailingStop
     df['UT_Buy'] = (src > df['UT_Stop']) & (src.shift(1) <= df['UT_Stop'].shift(1))
     df['UT_Sell'] = (src < df['UT_Stop']) & (src.shift(1) >= df['UT_Stop'].shift(1))
     
     return df
 
-# ==========================================
-# MAIN APP (AFTER LOGIN)
-# ==========================================
 current_user = st.session_state.logged_in_user
 user_data = st.session_state.users_db[current_user]
 
-head_col1, head_col2 = st.columns()
+head_col1, head_col2 = st.columns([3, 1])
 with head_col1:
     st.title("📈 URK")
     st.caption(f"👤 యూజర్: **{current_user}** | Virtual Paper Trading (₹0 Risk)")
@@ -247,3 +221,30 @@ def get_index_price(symbol):
             change = curr_price - prev_close
             pct = (change / prev_close) * 100
             return round(curr_price, 2), round(change, 2), round(pct, 2)
+        elif len(hist_2d) == 1:
+            return round(hist_2d['Close'].iloc[-1], 2), 0.0, 0.0
+    except Exception:
+        pass
+    return None, None, None
+
+@st.cache_data(ttl=30)
+def get_stock_details(symbol):
+    try:
+        stock = yf.Ticker(symbol)
+        hist_2d = stock.history(period="2d")
+        intraday = stock.history(period="1d", interval="1m")
+        curr_p = round(intraday['Close'].iloc[-1], 2) if not intraday.empty else round(stock.fast_info['last_price'], 2)
+        
+        if len(hist_2d) >= 2:
+            prev_c = hist_2d['Close'].iloc[-2]
+            chg = round(curr_p - prev_c, 2)
+            pct = round((chg / prev_c) * 100, 2)
+            return curr_p, chg, pct
+        return curr_p, 0.0, 0.0
+    except Exception:
+        return None, None, None
+
+@st.cache_data(ttl=60)
+def get_candle_data(symbol, period, interval):
+    try:
+        ticker_obj = yf.Ticker(symbol)
