@@ -132,8 +132,7 @@ def render_chart(df, title, show_ut=True, key_val=1.0, atr_per=10, show_ema=True
     fig.update_yaxes(side='right', range=[vis['Low'].min()*0.998, vis['High'].max()*1.002], showgrid=True, gridcolor='#F0F3FA', showspikes=True, spikemode='across', spikesnap='cursor')
     fig.update_layout(title=dict(text=f"<b>{title}</b>", font=dict(size=15)), template="plotly_white", xaxis_rangeslider_visible=False, height=480, margin=dict(l=10, r=50, t=40, b=20), hovermode="x unified", dragmode="pan")
     st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displaylogo': False, 'modeBarButtonsToAdd': ['drawline', 'drawrect', 'eraseshape']})
-
-def execute_trade(side, item_name, qty, price, is_option=False):
+    def execute_trade(side, item_name, qty, price, is_option=False):
     total_val = round(qty * price, 2)
     if side == "BUY":
         if st.session_state.cash >= total_val:
@@ -319,4 +318,3 @@ with page_pnl:
         st.rerun()
 
 # END OF URK APP
-    
