@@ -28,7 +28,22 @@ def trigger_beep(kind="buy"):
     st.audio(make_wav(1000, 0.35) if kind == "buy" else make_wav(550, 0.5), format="audio/wav", autoplay=True)
 
 if "db" not in st.session_state:
-    st.session_state.db = {"admin": {"pw": "123", "cash": 100000.0, "port": {}, "hist": [], "rpnl": 0.0, "wl": ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"], "bot_on": False, "bot_pos": None, "bot_logs": [], "trades_today": 0, "last_date": str(datetime.now(IST).date()), "sound": None}}
+    st.session_state.db = {
+        "admin": {
+            "pw": "123",
+            "cash": 100000.0,
+            "port": {},
+            "hist": [],
+            "rpnl": 0.0,
+            "wl": ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"],
+            "bot_on": False,
+            "bot_pos": None,
+            "bot_logs": [],
+            "trades_today": 0,
+            "last_date": str(datetime.now(IST).date()),
+            "sound": None,
+        }
+    }
 if "user" not in st.session_state:
     st.session_state.user = None
 
@@ -100,6 +115,30 @@ def get_data(sym, tf):
     except Exception:
         return pd.DataFrame()
 
+# --- STEP 1: 9 EMA + VWAP + PRICE STRATEGY ---
+def add_ema_vwap(df):
+    if df.empty or len(df) < 10:
+        return df
+    df = df.copy()
+    # 1. Calculate 9 EMA
+    df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+
+    # 2. Calculate Intraday VWAP (resets daily)
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
+    if df["Volume"].sum() > 0:
+        dates = df.index.date
+        cum_pv = (tp * df["Volume"]).groupby(dates).cumsum()
+        cum_vol = df["Volume"].groupby(dates).cumsum().replace(0, np.nan)
+        df["VWAP"] = (cum_pv / cum_vol).ffill()
+    else:
+        # Indices (^NSEI / ^NSEBANK) have 0 volume on Yahoo Finance -> fallback to 20 SMA
+        df["VWAP"] = df["Close"].rolling(20, min_periods=1).mean()
+
+    # 3. Condition: Price > 9 EMA > VWAP
+    df["Buy_Cond"] = (df["Close"] > df["EMA9"]) & (df["EMA9"] > df["VWAP"])
+    df["Sell_Cond"] = (df["Close"] < df["EMA9"])
+    return df
+
 c1, c2 = st.columns((3, 1))
 c1.subheader(f"🚀 URK V4 | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
@@ -121,7 +160,7 @@ pm3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
 st.divider()
 
 stocks = ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ITC.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"]
-t1, t2, t3, t4 = st.tabs(["🤖 Auto-Bot", "📊 Pro Chart & Trade", "⭐ Watchlist", "📜 History"])
+t1, t2, t3, t4 = st.tabs(["🤖 Auto-Bot", "📊 Pro Chart", "⭐ Watchlist", "📜 History"])
 
 with t1:
     now_ist = datetime.now(IST)
@@ -145,25 +184,37 @@ with t1:
     b1, b2, b3 = st.columns((2, 2, 1))
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
         ud["bot_on"] = True
-        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym}")
+        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym} (9EMA > VWAP)")
         st.rerun()
     if b2.button("⏹️ STOP BOT", use_container_width=True):
         ud["bot_on"] = False
         ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STOPPED")
         st.rerun()
-    if b3.button("🔊 Beep", use_container_width=True, type="primary"):
+    if b3.button("🔊 Beep", use_container_width=True):
         trigger_beep("buy")
 
     if ud["bot_on"]:
-        st.success("🟢 BOT RUNNING (Direct Order Mode - 5s Scan)")
+        st.success("🟢 BOT RUNNING (Strategy: Price > 9 EMA > VWAP)")
     else:
         st.error("🔴 BOT STOPPED")
 
     ltp = get_ltp(bot_sym)
-    if ltp is not None:
-        st.metric("Live LTP", f"₹{ltp}")
+    df_bot = add_ema_vwap(get_data(bot_sym, bot_tf))
 
-        # ACTIVE TRADE & MANUAL EXIT
+    if ltp is not None:
+        if not df_bot.empty and "EMA9" in df_bot.columns:
+            e9_val = round(float(df_bot["EMA9"].iloc[-1]), 2)
+            vw_val = round(float(df_bot["VWAP"].iloc[-1]), 2)
+            cond_ok = bool(df_bot["Buy_Cond"].iloc[-1])
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Live LTP", f"₹{ltp}")
+            m2.metric("9 EMA", f"₹{e9_val}")
+            m3.metric("VWAP", f"₹{vw_val}")
+            m4.metric("Signal", "🟢 BUY READY" if cond_ok else "⏳ WAIT")
+        else:
+            st.metric("Live LTP", f"₹{ltp}")
+
+        # ACTIVE TRADE & EXIT LOGIC
         if isinstance(ud.get("bot_pos"), dict):
             p = ud["bot_pos"]
             pltp = get_ltp(p["sym"]) or ltp
@@ -191,36 +242,3 @@ with t1:
                     ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
                     ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
                     ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": reason, "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
-                    ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] {reason} {p['sym']} @ ₹{pltp} | P&L: ₹{rpnl:+,.2f}")
-                    ud["bot_pos"], ud["sound"] = None, "exit"
-                    st.rerun()
-
-        # DIRECT ORDER EXECUTION WHEN BOT IS ON (NO INDICATORS)
-        elif ud["bot_on"] and ud["bot_pos"] is None:
-            cost = round(ltp * bot_qty, 2)
-            if in_win and ud["trades_today"] < max_tr and ud["cash"] >= cost:
-                ud["cash"] = round(ud["cash"] - cost, 2)
-                ud["bot_pos"] = {
-                    "sym": bot_sym, "qty": bot_qty, "entry": ltp,
-                    "sl": round(ltp - sl_pts, 2), "tgt": round(ltp + tgt_pts, 2), "hi": ltp
-                }
-                ud["trades_today"] += 1
-                ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": bot_sym, "Type": "DIRECT-BUY", "Qty": bot_qty, "Price": ltp, "P&L": 0.0})
-                ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] 🚀 DIRECT BUY {bot_sym} ({bot_qty}) @ ₹{ltp}")
-                ud["sound"] = "buy"
-                st.rerun()
-            else:
-                st.warning(f"⏳ Waiting: Window={in_win} | Trades={ud['trades_today']}/{max_tr} | Cash=₹{ud['cash']:,.0f}")
-    else:
-        st.warning(f"⏳ Loading {bot_sym} price...")
-
-    with st.expander("📋 Bot Logs", expanded=True):
-        for lg in reversed(ud["bot_logs"][-12:]):
-            st.text(lg)
-
-with t2:
-    cc1, cc2 = st.columns((2, 1))
-    csym, ctf = cc1.selectbox("Asset:", stocks, key="cs"), cc2.selectbox("TF:", ["3m", "5m", "15m", "1D"], index=1, key="ct")
-    cdf = get_data(csym, ctf)
-    if not cdf.empty:
-        fig = go.Figure()
