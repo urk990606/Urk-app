@@ -7,7 +7,7 @@ import time, io, wave, struct, math
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK Pro Auto Trading", page_icon="📈", layout="centered")
+st.set_page_config(page_title="URK Pro Auto Trading V3", page_icon="🚀", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
 @st.cache_data
@@ -33,7 +33,7 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 if not st.session_state.user:
-    st.title("📈 URK Paper Trading")
+    st.title("🚀 URK V3 Login")
     u = st.text_input("Username", value="admin")
     p = st.text_input("Password", type="password")
     if st.button("Login", type="primary"):
@@ -118,7 +118,7 @@ def get_data(sym, tf):
         return pd.DataFrame()
 
 c1, c2 = st.columns((3, 1))
-c1.subheader(f"📈 URK | Cash: ₹{ud['cash']:,.2f}")
+c1.subheader(f"🚀 URK V3 | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
@@ -199,7 +199,6 @@ with t1:
         m2.metric("VWAP", f"₹{vwap}", "✅" if ltp > vwap else "❌")
         m3.metric("9 EMA", f"₹{ema9}", "✅" if ltp > ema9 else "❌")
         m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
-        st.write(f"**Prev High:** `₹{ph}` {'✅' if ltp > ph else '⏳'} | **Prev Low (SL):** `₹{pl}`")
 
         if ud["bot_pos"] is not None:
             p = ud["bot_pos"]
@@ -225,3 +224,4 @@ with t1:
             with st.expander("✏️ Edit SL / Target Manually", expanded=False):
                 ec1, ec2, ec3 = st.columns(3)
                 nsl = ec1.number_input("SL (₹):", value=float(p["sl"]), step=0.5)
+                ntg = ec2.number_input("TGT (₹):", value=float(p["tgt"]), step=0.5)
