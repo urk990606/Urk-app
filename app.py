@@ -1,20 +1,41 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import time
+import io
+import wave
+import struct
+import math
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="URK Pro Auto Trading", page_icon="📈", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
-def play_beep(kind="buy"):
-    freq = 950 if kind == "buy" else 550
-    js = f"<script>try{{const c=new(window.AudioContext||window.webkitAudioContext)();const o=c.createOscillator();o.frequency.value={freq};o.connect(c.destination);o.start();o.stop(c.currentTime+0.3);}}catch(e){{}}</script>"
-    components.html(js, height=0, width=0)
+# ==========================================
+# REAL WAV AUDIO GENERATOR (WORKS ON IPAD/MOBILE)
+# ==========================================
+@st.cache_data
+def make_beep_wav(freq=950, dur=0.35):
+    rate = 22050
+    n_samples = int(rate * dur)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(rate)
+        frames = bytearray()
+        for i in range(n_samples):
+            val = int(28000 * math.sin(2 * math.pi * freq * i / rate))
+            frames.extend(struct.pack("<h", val))
+        wf.writeframes(bytes(frames))
+    return buf.getvalue()
+
+def trigger_beep(kind="buy"):
+    wav_bytes = make_beep_wav(1000, 0.35) if kind == "buy" else make_beep_wav(550, 0.5)
+    st.audio(wav_bytes, format="audio/wav", autoplay=True)
 
 if "db" not in st.session_state:
     st.session_state.db = {
@@ -50,7 +71,7 @@ for k, v in (("bot_on", False), ("bot_pos", None), ("bot_logs", []), ("trades_to
     ud.setdefault(k, v)
 
 if ud["sound"]:
-    play_beep(ud["sound"])
+    trigger_beep(ud["sound"])
     ud["sound"] = None
 
 @st.cache_data(ttl=60)
@@ -185,10 +206,13 @@ with t1:
         ud["bot_on"] = False
         ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STOPPED")
         st.rerun()
-    if b3.button("🔊 Beep", use_container_width=True):
-        play_beep("buy")
+    if b3.button("🔊 Beep", use_container_width=True, type="primary"):
+        trigger_beep("buy")
 
-    st.success("🟢 BOT RUNNING (5s Scan)") if ud["bot_on"] else st.error("🔴 BOT STOPPED")
+    if ud["bot_on"]:
+        st.success("🟢 BOT RUNNING (5s Scan)")
+    else:
+        st.error("🔴 BOT STOPPED")
 
     bdf = get_data(bot_sym, bot_tf)
     if len(bdf) >= 3:
@@ -230,11 +254,3 @@ with t1:
                 nsl = ec1.number_input("SL (₹):", value=float(p["sl"]), step=0.5)
                 ntg = ec2.number_input("TGT (₹):", value=float(p["tgt"]), step=0.5)
                 if ec3.button("💾 Update", use_container_width=True):
-                    ud["bot_pos"]["sl"] = round(nsl, 2)
-                    ud["bot_pos"]["tgt"] = round(ntg, 2)
-                    st.rerun()
-
-                if st.button("🚨 EXIT TRADE NOW", type="primary", use_container_width=True):
-                    ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
-                    ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
-                    ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": "MANUAL-EXIT", "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
