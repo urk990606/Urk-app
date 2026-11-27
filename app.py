@@ -124,26 +124,26 @@ t1, t2, t3, t4 = st.tabs(["🤖 Auto-Bot", "📊 Pro Chart & Trade", "⭐ Watchl
 
 with t1:
     bc1, bc2, bc3, bc4 = st.columns(4)
-    bc1.selectbox("Asset:", stocks, index=0, key="bsym")
-    bc2.selectbox("TF:", ["3m", "5m", "15m"], index=0, key="btf")
-    bc3.number_input("Qty:", 1, 1000, 10, key="bqty")
-    bc4.number_input("Max Trades:", 1, 10, 5, key="bmax")
+    bot_sym = bc1.selectbox("Asset:", stocks, index=0, key="bsym")
+    bot_tf = bc2.selectbox("TF:", ["3m", "5m", "15m"], index=0, key="btf")
+    bot_qty = bc3.number_input("Qty:", 1, 1000, 10, key="bqty")
+    max_tr = bc4.number_input("Max Trades:", 1, 10, 5, key="bmax")
 
     ca, cb, cc, cd = st.columns(4)
-    ca.checkbox("Supertrend", value=True, key="chk_st")
-    cb.checkbox("VWAP", value=True, key="chk_vw")
-    cc.checkbox("9 EMA", value=False, key="chk_em")
-    cd.checkbox("Prev High", value=False, key="chk_bk")
+    u_st = ca.checkbox("Supertrend", value=True, key="chk_st")
+    u_vw = cb.checkbox("VWAP", value=True, key="chk_vw")
+    u_em = cc.checkbox("9 EMA", value=False, key="chk_em")
+    u_bk = cd.checkbox("Prev High", value=False, key="chk_bk")
 
     tc1, tc2, tc3 = st.columns((2, 1, 1))
-    tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5, key="sl_rr")
-    tc2.checkbox("Trailing SL", value=True, key="chk_tr")
-    tc3.number_input("Trail Step:", 0.5, 50.0, 1.0, 0.5, key="num_ts")
+    rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5, key="sl_rr")
+    u_tr = tc2.checkbox("Trailing SL", value=True, key="chk_tr")
+    t_step = tc3.number_input("Trail Step:", 0.5, 50.0, 1.0, 0.5, key="num_ts")
 
     b1, b2, b3 = st.columns((2, 2, 1))
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
         ud["bot_on"] = True
-        ud["bot_logs"].append(f"[{datetime.now(IST).strftime('%H:%M:%S')}] Bot STARTED on {st.session_state.bsym}")
+        ud["bot_logs"].append(f"[{datetime.now(IST).strftime('%H:%M:%S')}] Bot STARTED on {bot_sym}")
         st.rerun()
     if b2.button("⏹️ STOP BOT", use_container_width=True):
         ud["bot_on"] = False
@@ -158,24 +158,13 @@ with t1:
             trigger_beep(ud["sound"])
             ud["sound"] = None
 
-        b_sym = st.session_state.bsym
-        b_tf = st.session_state.btf
-        b_qty = st.session_state.bqty
-        m_tr = st.session_state.bmax
-        u_st = st.session_state.chk_st
-        u_vw = st.session_state.chk_vw
-        u_em = st.session_state.chk_em
-        u_bk = st.session_state.chk_bk
-        rr_val = st.session_state.sl_rr
-        u_tr = st.session_state.chk_tr
-        t_step = st.session_state.num_ts
-
         now_ist = datetime.now(IST)
         curr_t = now_ist.time()
-        is_crude = (b_sym == "CRUDEOIL DEC FUT (₹)")
+        is_crude = (bot_sym == "CRUDEOIL DEC FUT (₹)")
         in_win = (dtime(9, 0) <= curr_t <= dtime(23, 30)) if is_crude else (dtime(9, 15) <= curr_t <= dtime(15, 25))
         sq_t = dtime(23, 30) if is_crude else dtime(15, 25)
 
+        # Live P&L Banner inside fragment
         inv_t = sum(v["qty"] * v["avg"] for v in ud["port"].values())
         cur_t = sum(v["qty"] * (get_ltp(k) or v["avg"]) for k, v in ud["port"].items())
         if ud["bot_pos"]:
@@ -195,7 +184,7 @@ with t1:
         else:
             st.error("🔴 BOT STOPPED")
 
-        bdf = get_data(b_sym, b_tf)
+        bdf = get_data(bot_sym, bot_tf)
         if len(bdf) >= 3:
             ltp = round(float(bdf["Close"].iloc[-1]), 2)
             vwap = round(float(bdf["VWAP"].iloc[-1]), 2)
@@ -227,3 +216,8 @@ with t1:
 
                 rpnl = round((pltp - p["entry"]) * p["qty"], 2)
                 st.info(f"{'🟢' if rpnl>=0 else '🔴'} **Active Trade:** {p['sym']} | Qty: {p['qty']} | Entry: ₹{p['entry']} | LTP: ₹{pltp} | SL: ₹{p['sl']} | TGT: ₹{p['tgt']} | **Live P&L: ₹{rpnl:+,.2f}**")
+
+                if st.button("🚨 EXIT TRADE NOW (Manual Exit)", type="primary", use_container_width=True, key="btn_man_exit"):
+                    ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
+                    ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
+                    ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": "MANUAL-EXIT", "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
