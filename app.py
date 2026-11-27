@@ -115,15 +115,13 @@ def get_data(sym, tf):
     except Exception:
         return pd.DataFrame()
 
-# --- STEP 1: 9 EMA + VWAP + PRICE STRATEGY ---
+# --- 9 EMA + VWAP CALCULATION ---
 def add_ema_vwap(df):
     if df.empty or len(df) < 10:
         return df
     df = df.copy()
-    # 1. Calculate 9 EMA
     df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
 
-    # 2. Calculate Intraday VWAP (resets daily)
     tp = (df["High"] + df["Low"] + df["Close"]) / 3.0
     if df["Volume"].sum() > 0:
         dates = df.index.date
@@ -131,12 +129,7 @@ def add_ema_vwap(df):
         cum_vol = df["Volume"].groupby(dates).cumsum().replace(0, np.nan)
         df["VWAP"] = (cum_pv / cum_vol).ffill()
     else:
-        # Indices (^NSEI / ^NSEBANK) have 0 volume on Yahoo Finance -> fallback to 20 SMA
         df["VWAP"] = df["Close"].rolling(20, min_periods=1).mean()
-
-    # 3. Condition: Price > 9 EMA > VWAP
-    df["Buy_Cond"] = (df["Close"] > df["EMA9"]) & (df["EMA9"] > df["VWAP"])
-    df["Sell_Cond"] = (df["Close"] < df["EMA9"])
     return df
 
 c1, c2 = st.columns((3, 1))
@@ -184,7 +177,7 @@ with t1:
     b1, b2, b3 = st.columns((2, 2, 1))
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
         ud["bot_on"] = True
-        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym} (9EMA > VWAP)")
+        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym} (LTP > 9EMA & VWAP)")
         st.rerun()
     if b2.button("⏹️ STOP BOT", use_container_width=True):
         ud["bot_on"] = False
@@ -194,7 +187,7 @@ with t1:
         trigger_beep("buy")
 
     if ud["bot_on"]:
-        st.success("🟢 BOT RUNNING (Strategy: Price > 9 EMA > VWAP)")
+        st.success("🟢 BOT RUNNING (Strategy: LTP > 9 EMA & LTP > VWAP)")
     else:
         st.error("🔴 BOT STOPPED")
 
@@ -202,10 +195,12 @@ with t1:
     df_bot = add_ema_vwap(get_data(bot_sym, bot_tf))
 
     if ltp is not None:
+        cond_ok = False
         if not df_bot.empty and "EMA9" in df_bot.columns:
             e9_val = round(float(df_bot["EMA9"].iloc[-1]), 2)
             vw_val = round(float(df_bot["VWAP"].iloc[-1]), 2)
-            cond_ok = bool(df_bot["Buy_Cond"].iloc[-1])
+            # NEW CONDITION: Live LTP > 9 EMA AND Live LTP > VWAP
+            cond_ok = (ltp > e9_val) and (ltp > vw_val)
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Live LTP", f"₹{ltp}")
             m2.metric("9 EMA", f"₹{e9_val}")
@@ -242,3 +237,8 @@ with t1:
                     ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
                     ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
                     ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": reason, "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
+                    ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] 🔔 {reason}: {p['sym']} @ ₹{pltp} | P&L: ₹{rpnl:+,.2f}")
+                    ud["bot_pos"], ud["sound"] = None, "exit"
+                    st.rerun()
+
+        # NEW ENTRY LOGIC: Live LTP > 9 EMA and Live LTP > VWAP
