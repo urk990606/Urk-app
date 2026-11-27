@@ -3,49 +3,32 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import time
-import io
-import wave
-import struct
-import math
+import time, io, wave, struct, math
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 st.set_page_config(page_title="URK Pro Auto Trading", page_icon="📈", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
-# ==========================================
-# REAL WAV AUDIO GENERATOR (WORKS ON IPAD/MOBILE)
-# ==========================================
 @st.cache_data
-def make_beep_wav(freq=950, dur=0.35):
+def make_wav(freq=950, dur=0.35):
     rate = 22050
-    n_samples = int(rate * dur)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(rate)
         frames = bytearray()
-        for i in range(n_samples):
-            val = int(28000 * math.sin(2 * math.pi * freq * i / rate))
-            frames.extend(struct.pack("<h", val))
+        for i in range(int(rate * dur)):
+            frames.extend(struct.pack("<h", int(28000 * math.sin(2 * math.pi * freq * i / rate))))
         wf.writeframes(bytes(frames))
     return buf.getvalue()
 
 def trigger_beep(kind="buy"):
-    wav_bytes = make_beep_wav(1000, 0.35) if kind == "buy" else make_beep_wav(550, 0.5)
-    st.audio(wav_bytes, format="audio/wav", autoplay=True)
+    st.audio(make_wav(1000, 0.35) if kind == "buy" else make_wav(550, 0.5), format="audio/wav", autoplay=True)
 
 if "db" not in st.session_state:
-    st.session_state.db = {
-        "admin": {
-            "pw": "123", "cash": 100000.0, "port": {}, "hist": [], "rpnl": 0.0,
-            "wl": ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"],
-            "bot_on": False, "bot_pos": None, "bot_logs": [], "trades_today": 0,
-            "last_date": str(datetime.now(IST).date()), "sound": None
-        }
-    }
+    st.session_state.db = {"admin": {"pw": "123", "cash": 100000.0, "port": {}, "hist": [], "rpnl": 0.0, "wl": ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"], "bot_on": False, "bot_pos": None, "bot_logs": [], "trades_today": 0, "last_date": str(datetime.now(IST).date()), "sound": None}}
 if "user" not in st.session_state:
     st.session_state.user = None
 
@@ -64,9 +47,7 @@ if not st.session_state.user:
 ud = st.session_state.db[st.session_state.user]
 today_str = str(datetime.now(IST).date())
 if ud.get("last_date") != today_str:
-    ud["trades_today"] = 0
-    ud["last_date"] = today_str
-
+    ud["trades_today"], ud["last_date"] = 0, today_str
 for k, v in (("bot_on", False), ("bot_pos", None), ("bot_logs", []), ("trades_today", 0), ("sound", None)):
     ud.setdefault(k, v)
 
@@ -106,8 +87,7 @@ def get_data(sym, tf):
         tk = "CL=F" if is_c else sym
         m = get_usdinr() if is_c else 1.0
         pm = {"3m": ("2d", "1m"), "5m": ("2d", "5m"), "15m": ("5d", "15m"), "1D": ("6mo", "1d")}
-        per, inter = pm[tf]
-        df = yf.Ticker(tk).history(period=per, interval=inter)
+        df = yf.Ticker(tk).history(period=pm[tf][0], interval=pm[tf][1])
         if df.empty:
             return pd.DataFrame()
         if tf == "3m":
@@ -115,25 +95,20 @@ def get_data(sym, tf):
         if is_c:
             for col in ("Open", "High", "Low", "Close"):
                 df[col] = df[col] * m
-
         df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
         tp = (df["High"] + df["Low"] + df["Close"]) / 3
         vol = df["Volume"].replace(0, 1)
         df["VWAP"] = (tp * vol).groupby(df.index.date).cumsum() / vol.groupby(df.index.date).cumsum()
-
         tr = pd.concat((df["High"] - df["Low"], (df["High"] - df["Close"].shift()).abs(), (df["Low"] - df["Close"].shift()).abs()), axis=1).max(axis=1)
         atr = tr.ewm(alpha=0.1, adjust=False).mean()
         hl2 = (df["High"] + df["Low"]) / 2
         ub, lb = hl2 + 3 * atr, hl2 - 3 * atr
-
         n = len(df)
-        st_l = [np.nan for _ in range(n)]
-        d = [1 for _ in range(n)]
+        st_l, d = [np.nan] * n, [1] * n
         for i in range(1, n):
             d[i] = 1 if df["Close"].iloc[i] > ub.iloc[i-1] else (-1 if df["Close"].iloc[i] < lb.iloc[i-1] else d[i-1])
             st_l[i] = lb.iloc[i] if d[i] == 1 else ub.iloc[i]
-        df["ST"] = st_l
-        df["ST_Dir"] = d
+        df["ST"], df["ST_Dir"] = st_l, d
         df["ST_Up"] = np.where(df["ST_Dir"] == 1, df["ST"], np.nan)
         df["ST_Dn"] = np.where(df["ST_Dir"] == -1, df["ST"], np.nan)
         return df
@@ -146,18 +121,14 @@ if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
 
-inv_t, cur_t = 0.0, 0.0
-for k, v in ud["port"].items():
-    pn = get_ltp(k) or v["avg"]
-    inv_t += v["qty"] * v["avg"]
-    cur_t += v["qty"] * pn
+inv_t = sum(v["qty"] * v["avg"] for v in ud["port"].values())
+cur_t = sum(v["qty"] * (get_ltp(k) or v["avg"]) for k, v in ud["port"].items())
 if ud["bot_pos"]:
     bp = ud["bot_pos"]
-    pn = get_ltp(bp["sym"]) or bp["entry"]
     inv_t += bp["qty"] * bp["entry"]
-    cur_t += bp["qty"] * pn
-
+    cur_t += bp["qty"] * (get_ltp(bp["sym"]) or bp["entry"])
 un_pnl = round(cur_t - inv_t, 2)
+
 pm1, pm2, pm3 = st.columns(3)
 pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
 pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
@@ -176,22 +147,13 @@ with t1:
     bot_qty = bc3.number_input("Qty:", 1, 1000, 10)
     max_tr = bc4.number_input("Max Trades:", 1, 10, 5)
 
-    if bot_sym == "CRUDEOIL DEC FUT (₹)":
-        in_win = dtime(9, 0) <= curr_t <= dtime(23, 30)
-        sq_t = dtime(23, 30)
-        w_txt = "09:00 - 23:30 (MCX)"
-    else:
-        in_win = dtime(9, 15) <= curr_t <= dtime(15, 25)
-        sq_t = dtime(15, 25)
-        w_txt = "09:15 - 15:25 (NSE)"
-
-    st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Window: **{w_txt}** | Trades: **{ud['trades_today']}**")
+    is_crude = (bot_sym == "CRUDEOIL DEC FUT (₹)")
+    in_win = (dtime(9, 0) <= curr_t <= dtime(23, 30)) if is_crude else (dtime(9, 15) <= curr_t <= dtime(15, 25))
+    sq_t = dtime(23, 30) if is_crude else dtime(15, 25)
+    st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Window: **{'09:00 - 23:30 (MCX)' if is_crude else '09:15 - 15:25 (NSE)'}** | Trades: **{ud['trades_today']}**")
 
     ca, cb, cc = st.columns(3)
-    u_st = ca.checkbox("Supertrend Bull", True)
-    u_vw = cb.checkbox("Above VWAP", True)
-    u_em = cc.checkbox("Above 9 EMA", True)
-
+    u_st, u_vw, u_em = ca.checkbox("Supertrend Bull", True), cb.checkbox("Above VWAP", True), cc.checkbox("Above 9 EMA", True)
     tc1, tc2, tc3 = st.columns((2, 1, 1))
     rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5)
     u_tr = tc2.checkbox("Trailing SL", True)
@@ -216,18 +178,11 @@ with t1:
 
     bdf = get_data(bot_sym, bot_tf)
     if len(bdf) >= 3:
-        ltp = round(float(bdf["Close"].iloc[-1]), 2)
-        vwap = round(float(bdf["VWAP"].iloc[-1]), 2)
-        ema9 = round(float(bdf["EMA9"].iloc[-1]), 2)
+        ltp, vwap, ema9 = round(float(bdf["Close"].iloc[-1]), 2), round(float(bdf["VWAP"].iloc[-1]), 2), round(float(bdf["EMA9"].iloc[-1]), 2)
         stv = round(float(bdf["ST"].iloc[-1]), 2) if not np.isnan(bdf["ST"].iloc[-1]) else ltp
         stb = bdf["ST_Dir"].iloc[-1] == 1
-        ph = round(float(bdf["High"].iloc[-2]), 2)
-        pl = round(float(bdf["Low"].iloc[-2]), 2)
-
-        c_vw = (ltp > vwap) if u_vw else True
-        c_em = (ltp > ema9) if u_em else True
-        c_st = (stb and ltp > stv) if u_st else True
-        c_bk = ltp > ph
+        ph, pl = round(float(bdf["High"].iloc[-2]), 2), round(float(bdf["Low"].iloc[-2]), 2)
+        c_vw, c_em, c_st, c_bk = (ltp > vwap if u_vw else True), (ltp > ema9 if u_em else True), (stb and ltp > stv if u_st else True), (ltp > ph)
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("LTP", f"₹{ltp}")
@@ -245,12 +200,16 @@ with t1:
                     ud["bot_pos"]["hi"] = pltp
                     ud["bot_pos"]["sl"] = round(p["sl"] + diff, 2)
                     p = ud["bot_pos"]
-
             rpnl = round((pltp - p["entry"]) * p["qty"], 2)
             st.info(f"{'🟢' if rpnl>=0 else '🔴'} **Active:** {p['sym']} | Qty:{p['qty']} | Entry:₹{p['entry']} | LTP:₹{pltp} | SL:₹{p['sl']} | TGT:₹{p['tgt']} | **P&L: ₹{rpnl:+,.2f}**")
-
             with st.expander("✏️ Edit SL / Target or Exit Now", expanded=True):
                 ec1, ec2, ec3 = st.columns(3)
                 nsl = ec1.number_input("SL (₹):", value=float(p["sl"]), step=0.5)
                 ntg = ec2.number_input("TGT (₹):", value=float(p["tgt"]), step=0.5)
                 if ec3.button("💾 Update", use_container_width=True):
+                    ud["bot_pos"]["sl"], ud["bot_pos"]["tgt"] = round(nsl, 2), round(ntg, 2)
+                    st.rerun()
+                if st.button("🚨 EXIT TRADE NOW", type="primary", use_container_width=True):
+                    ud["rpnl"], ud["cash"] = round(ud["rpnl"] + rpnl, 2), round(ud["cash"] + pltp * p["qty"], 2)
+                    ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": "MANUAL-EXIT", "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
+                    ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] 🚨 MANUAL EXIT {p['sym']} @ ₹{pltp} | P&L: ₹{rpnl:+,.2f}")
