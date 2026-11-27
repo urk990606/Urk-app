@@ -144,10 +144,10 @@ with t1:
     now_ist = datetime.now(IST)
     curr_t = now_ist.time()
     bc1, bc2, bc3, bc4 = st.columns(4)
-    bot_sym = bc1.selectbox("Asset:", stocks, index=0)
-    bot_tf = bc2.selectbox("TF:", ["3m", "5m", "15m"], index=0)
-    bot_qty = bc3.number_input("Qty:", 1, 1000, 10)
-    max_tr = bc4.number_input("Max Trades:", 1, 10, 5)
+    bot_sym = bc1.selectbox("Asset:", stocks, index=0, key="bsym")
+    bot_tf = bc2.selectbox("TF:", ["3m", "5m", "15m"], index=0, key="btf")
+    bot_qty = bc3.number_input("Qty:", 1, 1000, 10, key="bqty")
+    max_tr = bc4.number_input("Max Trades:", 1, 10, 5, key="bmax")
 
     is_crude = (bot_sym == "CRUDEOIL DEC FUT (₹)")
     in_win = (dtime(9, 0) <= curr_t <= dtime(23, 30)) if is_crude else (dtime(9, 15) <= curr_t <= dtime(15, 25))
@@ -155,15 +155,15 @@ with t1:
     st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Window: **{'09:00 - 23:30 (MCX)' if is_crude else '09:15 - 15:25 (NSE)'}** | Trades: **{ud['trades_today']}**")
 
     ca, cb, cc, cd = st.columns(4)
-    u_st = ca.checkbox("Supertrend", True)
-    u_vw = cb.checkbox("VWAP", True)
-    u_em = cc.checkbox("9 EMA", True)
-    u_bk = cd.checkbox("Prev High", False)
+    u_st = ca.checkbox("Supertrend", value=True, key="chk_st")
+    u_vw = cb.checkbox("VWAP", value=True, key="chk_vw")
+    u_em = cc.checkbox("9 EMA", value=True, key="chk_em")
+    u_bk = cd.checkbox("Prev High", value=False, key="chk_bk")
 
     tc1, tc2, tc3 = st.columns((2, 1, 1))
-    rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5)
-    u_tr = tc2.checkbox("Trailing SL", True)
-    t_step = tc3.number_input("Trail Step:", 0.5, 50.0, 1.0, 0.5)
+    rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5, key="sl_rr")
+    u_tr = tc2.checkbox("Trailing SL", value=True, key="chk_tr")
+    t_step = tc3.number_input("Trail Step:", 0.5, 50.0, 1.0, 0.5, key="num_ts")
 
     b1, b2, b3 = st.columns((2, 2, 1))
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
@@ -215,7 +215,6 @@ with t1:
             rpnl = round((pltp - p["entry"]) * p["qty"], 2)
             st.info(f"{'🟢' if rpnl>=0 else '🔴'} **Active Trade:** {p['sym']} | Qty: {p['qty']} | Entry: ₹{p['entry']} | LTP: ₹{pltp} | SL: ₹{p['sl']} | TGT: ₹{p['tgt']} | **Live P&L: ₹{rpnl:+,.2f}**")
 
-            # Direct Manual Exit Button (Always Visible when Trade is Open)
             if st.button("🚨 EXIT TRADE NOW (Manual Exit)", type="primary", use_container_width=True):
                 ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
                 ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
