@@ -168,8 +168,7 @@ with t1:
     b1, b2, b3 = st.columns((2, 2, 1))
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
         ud["bot_on"] = True
-        if not isinstance(ud.get("bot_pos"), dict):
-            ud["bot_pos"] = None
+        ud["bot_pos"] = None
         ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym}")
         st.rerun()
     if b2.button("⏹️ STOP BOT", use_container_width=True):
@@ -204,7 +203,6 @@ with t1:
         m3.metric("9 EMA", f"₹{ema9}", "✅" if ltp > ema9 else "❌")
         m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
 
-        # ACTIVE TRADE & MANUAL EXIT
         if isinstance(ud.get("bot_pos"), dict):
             p = ud["bot_pos"]
             pltp = get_ltp(p["sym"]) or ltp
@@ -228,3 +226,4 @@ with t1:
 
             with st.expander("✏️ Edit SL / Target Manually", expanded=False):
                 ec1, ec2, ec3 = st.columns(3)
+                nsl = ec1.number_input("SL (₹):", value=float(p["sl"]), step=0.5)
