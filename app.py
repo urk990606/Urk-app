@@ -7,7 +7,7 @@ import time, io, wave, struct, math
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK Pro Auto Trading V3", page_icon="🚀", layout="centered")
+st.set_page_config(page_title="URK Auto Trading V4", page_icon="🚀", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
 @st.cache_data
@@ -33,7 +33,7 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 if not st.session_state.user:
-    st.title("🚀 URK V3 Login")
+    st.title("🚀 URK V4 Login")
     u = st.text_input("Username", value="admin")
     p = st.text_input("Password", type="password")
     if st.button("Login", type="primary"):
@@ -96,29 +96,12 @@ def get_data(sym, tf):
         if is_c:
             for col in ("Open", "High", "Low", "Close"):
                 df[col] = df[col] * m
-        df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
-        tp = (df["High"] + df["Low"] + df["Close"]) / 3
-        vol = df["Volume"].replace(0, 1)
-        df["VWAP"] = (tp * vol).groupby(df.index.date).cumsum() / vol.groupby(df.index.date).cumsum()
-        tr = pd.concat((df["High"] - df["Low"], (df["High"] - df["Close"].shift()).abs(), (df["Low"] - df["Close"].shift()).abs()), axis=1).max(axis=1)
-        atr = tr.ewm(alpha=0.1, adjust=False).mean()
-        hl2 = (df["High"] + df["Low"]) / 2
-        ub, lb = hl2 + 3 * atr, hl2 - 3 * atr
-        n = len(df)
-        st_l = [np.nan for _ in range(n)]
-        d = [1 for _ in range(n)]
-        for i in range(1, n):
-            d[i] = 1 if df["Close"].iloc[i] > ub.iloc[i-1] else (-1 if df["Close"].iloc[i] < lb.iloc[i-1] else d[i-1])
-            st_l[i] = lb.iloc[i] if d[i] == 1 else ub.iloc[i]
-        df["ST"], df["ST_Dir"] = st_l, d
-        df["ST_Up"] = np.where(df["ST_Dir"] == 1, df["ST"], np.nan)
-        df["ST_Dn"] = np.where(df["ST_Dir"] == -1, df["ST"], np.nan)
         return df
     except Exception:
         return pd.DataFrame()
 
 c1, c2 = st.columns((3, 1))
-c1.subheader(f"🚀 URK V3 | Cash: ₹{ud['cash']:,.2f}")
+c1.subheader(f"🚀 URK V4 | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
@@ -154,21 +137,14 @@ with t1:
     sq_t = dtime(23, 30) if is_crude else dtime(15, 25)
     st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Window: **{'09:00 - 23:30 (MCX)' if is_crude else '09:15 - 15:25 (NSE)'}** | Trades: **{ud['trades_today']}**")
 
-    ca, cb, cc, cd = st.columns(4)
-    u_st = ca.checkbox("Supertrend", value=True)
-    u_vw = cb.checkbox("VWAP", value=False)
-    u_em = cc.checkbox("9 EMA", value=False)
-    u_bk = cd.checkbox("Prev High", value=False)
-
     tc1, tc2, tc3 = st.columns((2, 1, 1))
-    rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5)
-    u_tr = tc2.checkbox("Trailing SL", value=True)
-    t_step = tc3.number_input("Trail Step:", 0.5, 50.0, 1.0, 0.5)
+    sl_pts = tc1.number_input("Stop Loss (₹):", 0.5, 500.0, 2.0, 0.5)
+    tgt_pts = tc2.number_input("Target (₹):", 0.5, 1000.0, 4.0, 0.5)
+    u_tr = tc3.checkbox("Trailing SL", value=True)
 
     b1, b2, b3 = st.columns((2, 2, 1))
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
         ud["bot_on"] = True
-        ud["bot_pos"] = None
         ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym}")
         st.rerun()
     if b2.button("⏹️ STOP BOT", use_container_width=True):
@@ -179,36 +155,21 @@ with t1:
         trigger_beep("buy")
 
     if ud["bot_on"]:
-        st.success("🟢 BOT RUNNING (5s Scan)")
+        st.success("🟢 BOT RUNNING (Direct Order Mode - 5s Scan)")
     else:
         st.error("🔴 BOT STOPPED")
 
-    bdf = get_data(bot_sym, bot_tf)
-    if len(bdf) >= 3:
-        ltp = round(float(bdf["Close"].iloc[-1]), 2)
-        vwap = round(float(bdf["VWAP"].iloc[-1]), 2)
-        ema9 = round(float(bdf["EMA9"].iloc[-1]), 2)
-        stv = round(float(bdf["ST"].iloc[-1]), 2) if not np.isnan(bdf["ST"].iloc[-1]) else ltp
-        stb = bdf["ST_Dir"].iloc[-1] == 1
-        ph, pl = round(float(bdf["High"].iloc[-2]), 2), round(float(bdf["Low"].iloc[-2]), 2)
+    ltp = get_ltp(bot_sym)
+    if ltp is not None:
+        st.metric("Live LTP", f"₹{ltp}")
 
-        c_vw = (ltp > vwap) if u_vw else True
-        c_em = (ltp > ema9) if u_em else True
-        c_st = (stb and ltp > stv) if u_st else True
-        c_bk = (ltp > ph) if u_bk else True
-
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("LTP", f"₹{ltp}")
-        m2.metric("VWAP", f"₹{vwap}", "✅" if ltp > vwap else "❌")
-        m3.metric("9 EMA", f"₹{ema9}", "✅" if ltp > ema9 else "❌")
-        m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
-
+        # ACTIVE TRADE & MANUAL EXIT
         if isinstance(ud.get("bot_pos"), dict):
             p = ud["bot_pos"]
             pltp = get_ltp(p["sym"]) or ltp
             if ud["bot_on"] and u_tr and pltp > p.get("hi", p["entry"]):
-                diff = pltp - p.get("hi", p["entry"])
-                if diff >= t_step:
+                diff = round(pltp - p.get("hi", p["entry"]), 2)
+                if diff >= 0.5:
                     ud["bot_pos"]["hi"] = pltp
                     ud["bot_pos"]["sl"] = round(p["sl"] + diff, 2)
                     p = ud["bot_pos"]
@@ -224,6 +185,42 @@ with t1:
                 ud["bot_pos"], ud["sound"] = None, "exit"
                 st.rerun()
 
-            with st.expander("✏️ Edit SL / Target Manually", expanded=False):
-                ec1, ec2, ec3 = st.columns(3)
-                nsl = ec1.number_input("SL (₹):", value=float(p["sl"]), step=0.5)
+            if ud["bot_on"]:
+                reason = "SL HIT" if pltp <= p["sl"] else ("TARGET HIT" if pltp >= p["tgt"] else ("SQUARE-OFF" if curr_t >= sq_t else None))
+                if reason:
+                    ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
+                    ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
+                    ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": reason, "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
+                    ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] {reason} {p['sym']} @ ₹{pltp} | P&L: ₹{rpnl:+,.2f}")
+                    ud["bot_pos"], ud["sound"] = None, "exit"
+                    st.rerun()
+
+        # DIRECT ORDER EXECUTION WHEN BOT IS ON (NO INDICATORS)
+        elif ud["bot_on"] and ud["bot_pos"] is None:
+            cost = round(ltp * bot_qty, 2)
+            if in_win and ud["trades_today"] < max_tr and ud["cash"] >= cost:
+                ud["cash"] = round(ud["cash"] - cost, 2)
+                ud["bot_pos"] = {
+                    "sym": bot_sym, "qty": bot_qty, "entry": ltp,
+                    "sl": round(ltp - sl_pts, 2), "tgt": round(ltp + tgt_pts, 2), "hi": ltp
+                }
+                ud["trades_today"] += 1
+                ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": bot_sym, "Type": "DIRECT-BUY", "Qty": bot_qty, "Price": ltp, "P&L": 0.0})
+                ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] 🚀 DIRECT BUY {bot_sym} ({bot_qty}) @ ₹{ltp}")
+                ud["sound"] = "buy"
+                st.rerun()
+            else:
+                st.warning(f"⏳ Waiting: Window={in_win} | Trades={ud['trades_today']}/{max_tr} | Cash=₹{ud['cash']:,.0f}")
+    else:
+        st.warning(f"⏳ Loading {bot_sym} price...")
+
+    with st.expander("📋 Bot Logs", expanded=True):
+        for lg in reversed(ud["bot_logs"][-12:]):
+            st.text(lg)
+
+with t2:
+    cc1, cc2 = st.columns((2, 1))
+    csym, ctf = cc1.selectbox("Asset:", stocks, key="cs"), cc2.selectbox("TF:", ["3m", "5m", "15m", "1D"], index=1, key="ct")
+    cdf = get_data(csym, ctf)
+    if not cdf.empty:
+        fig = go.Figure()
