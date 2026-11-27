@@ -201,7 +201,6 @@ with t1:
         m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
         st.write(f"**Prev High:** `₹{ph}` {'✅' if ltp > ph else '⏳'} | **Prev Low (SL):** `₹{pl}`")
 
-        # ACTIVE TRADE & MANUAL EXIT
         if ud["bot_pos"] is not None:
             p = ud["bot_pos"]
             pltp = get_ltp(p["sym"]) or ltp
@@ -225,3 +224,4 @@ with t1:
 
             with st.expander("✏️ Edit SL / Target Manually", expanded=False):
                 ec1, ec2, ec3 = st.columns(3)
+                nsl = ec1.number_input("SL (₹):", value=float(p["sl"]), step=0.5)
