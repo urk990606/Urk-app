@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import io, wave, struct, math
+import time, io, wave, struct, math
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
@@ -50,6 +50,10 @@ if ud.get("last_date") != today_str:
     ud["trades_today"], ud["last_date"] = 0, today_str
 for k, v in (("bot_on", False), ("bot_pos", None), ("bot_logs", []), ("trades_today", 0), ("sound", None)):
     ud.setdefault(k, v)
+
+if ud["sound"]:
+    trigger_beep(ud["sound"])
+    ud["sound"] = None
 
 @st.cache_data(ttl=60)
 def get_usdinr():
@@ -119,105 +123,106 @@ if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
 
+inv_t = sum(v["qty"] * v["avg"] for v in ud["port"].values())
+cur_t = sum(v["qty"] * (get_ltp(k) or v["avg"]) for k, v in ud["port"].items())
+if ud["bot_pos"]:
+    bp = ud["bot_pos"]
+    inv_t += bp["qty"] * bp["entry"]
+    cur_t += bp["qty"] * (get_ltp(bp["sym"]) or bp["entry"])
+un_pnl = round(cur_t - inv_t, 2)
+
+pm1, pm2, pm3 = st.columns(3)
+pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
+pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
+pm3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
+st.divider()
+
 stocks = ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ITC.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"]
 t1, t2, t3, t4 = st.tabs(["🤖 Auto-Bot", "📊 Pro Chart & Trade", "⭐ Watchlist", "📜 History"])
 
 with t1:
+    now_ist = datetime.now(IST)
+    curr_t = now_ist.time()
     bc1, bc2, bc3, bc4 = st.columns(4)
-    bot_sym = bc1.selectbox("Asset:", stocks, index=0, key="bsym")
-    bot_tf = bc2.selectbox("TF:", ["3m", "5m", "15m"], index=0, key="btf")
-    bot_qty = bc3.number_input("Qty:", 1, 1000, 10, key="bqty")
-    max_tr = bc4.number_input("Max Trades:", 1, 10, 5, key="bmax")
+    bot_sym = bc1.selectbox("Asset:", stocks, index=0)
+    bot_tf = bc2.selectbox("TF:", ["3m", "5m", "15m"], index=0)
+    bot_qty = bc3.number_input("Qty:", 1, 1000, 10)
+    max_tr = bc4.number_input("Max Trades:", 1, 10, 5)
+
+    is_crude = (bot_sym == "CRUDEOIL DEC FUT (₹)")
+    in_win = (dtime(9, 0) <= curr_t <= dtime(23, 30)) if is_crude else (dtime(9, 15) <= curr_t <= dtime(15, 25))
+    sq_t = dtime(23, 30) if is_crude else dtime(15, 25)
+    st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Window: **{'09:00 - 23:30 (MCX)' if is_crude else '09:15 - 15:25 (NSE)'}** | Trades: **{ud['trades_today']}**")
 
     ca, cb, cc, cd = st.columns(4)
-    u_st = ca.checkbox("Supertrend", value=True, key="chk_st")
-    u_vw = cb.checkbox("VWAP", value=True, key="chk_vw")
-    u_em = cc.checkbox("9 EMA", value=False, key="chk_em")
-    u_bk = cd.checkbox("Prev High", value=False, key="chk_bk")
+    u_st = ca.checkbox("Supertrend", value=True)
+    u_vw = cb.checkbox("VWAP", value=True)
+    u_em = cc.checkbox("9 EMA", value=False)
+    u_bk = cd.checkbox("Prev High", value=False)
 
     tc1, tc2, tc3 = st.columns((2, 1, 1))
-    rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5, key="sl_rr")
-    u_tr = tc2.checkbox("Trailing SL", value=True, key="chk_tr")
-    t_step = tc3.number_input("Trail Step:", 0.5, 50.0, 1.0, 0.5, key="num_ts")
+    rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5)
+    u_tr = tc2.checkbox("Trailing SL", value=True)
+    t_step = tc3.number_input("Trail Step:", 0.5, 50.0, 1.0, 0.5)
 
     b1, b2, b3 = st.columns((2, 2, 1))
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
         ud["bot_on"] = True
-        ud["bot_logs"].append(f"[{datetime.now(IST).strftime('%H:%M:%S')}] Bot STARTED on {bot_sym}")
+        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym}")
         st.rerun()
     if b2.button("⏹️ STOP BOT", use_container_width=True):
         ud["bot_on"] = False
-        ud["bot_logs"].append(f"[{datetime.now(IST).strftime('%H:%M:%S')}] Bot STOPPED")
+        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STOPPED")
         st.rerun()
     if b3.button("🔊 Beep", use_container_width=True, type="primary"):
         trigger_beep("buy")
 
-    @st.fragment(run_every=5)
-    def live_bot_engine():
-        if ud["sound"]:
-            trigger_beep(ud["sound"])
-            ud["sound"] = None
+    if ud["bot_on"]:
+        st.success("🟢 BOT RUNNING (5s Scan)")
+    else:
+        st.error("🔴 BOT STOPPED")
 
-        now_ist = datetime.now(IST)
-        curr_t = now_ist.time()
-        is_crude = (bot_sym == "CRUDEOIL DEC FUT (₹)")
-        in_win = (dtime(9, 0) <= curr_t <= dtime(23, 30)) if is_crude else (dtime(9, 15) <= curr_t <= dtime(15, 25))
-        sq_t = dtime(23, 30) if is_crude else dtime(15, 25)
+    bdf = get_data(bot_sym, bot_tf)
+    if len(bdf) >= 3:
+        ltp = round(float(bdf["Close"].iloc[-1]), 2)
+        vwap = round(float(bdf["VWAP"].iloc[-1]), 2)
+        ema9 = round(float(bdf["EMA9"].iloc[-1]), 2)
+        stv = round(float(bdf["ST"].iloc[-1]), 2) if not np.isnan(bdf["ST"].iloc[-1]) else ltp
+        stb = bdf["ST_Dir"].iloc[-1] == 1
+        ph, pl = round(float(bdf["High"].iloc[-2]), 2), round(float(bdf["Low"].iloc[-2]), 2)
 
-        # Live P&L Banner inside fragment
-        inv_t = sum(v["qty"] * v["avg"] for v in ud["port"].values())
-        cur_t = sum(v["qty"] * (get_ltp(k) or v["avg"]) for k, v in ud["port"].items())
-        if ud["bot_pos"]:
-            bp = ud["bot_pos"]
-            inv_t += bp["qty"] * bp["entry"]
-            cur_t += bp["qty"] * (get_ltp(bp["sym"]) or bp["entry"])
-        un_pnl = round(cur_t - inv_t, 2)
+        c_vw = (ltp > vwap) if u_vw else True
+        c_em = (ltp > ema9) if u_em else True
+        c_st = (stb and ltp > stv) if u_st else True
+        c_bk = (ltp > ph) if u_bk else True
 
-        pm1, pm2, pm3 = st.columns(3)
-        pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
-        pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
-        pm3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("LTP", f"₹{ltp}")
+        m2.metric("VWAP", f"₹{vwap}", "✅" if ltp > vwap else "❌")
+        m3.metric("9 EMA", f"₹{ema9}", "✅" if ltp > ema9 else "❌")
+        m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
+        st.write(f"**Prev High:** `₹{ph}` {'✅' if ltp > ph else '⏳'} | **Prev Low (SL):** `₹{pl}`")
 
-        st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Cash: **₹{ud['cash']:,.2f}** | Trades: **{ud['trades_today']}**")
-        if ud["bot_on"]:
-            st.success("🟢 BOT RUNNING (Auto-Scanning every 5s...)")
-        else:
-            st.error("🔴 BOT STOPPED")
+        if ud["bot_pos"] is not None:
+            p = ud["bot_pos"]
+            pltp = get_ltp(p["sym"]) or ltp
+            if ud["bot_on"] and u_tr and pltp > p.get("hi", p["entry"]):
+                diff = pltp - p.get("hi", p["entry"])
+                if diff >= t_step:
+                    ud["bot_pos"]["hi"] = pltp
+                    ud["bot_pos"]["sl"] = round(p["sl"] + diff, 2)
+                    p = ud["bot_pos"]
 
-        bdf = get_data(bot_sym, bot_tf)
-        if len(bdf) >= 3:
-            ltp = round(float(bdf["Close"].iloc[-1]), 2)
-            vwap = round(float(bdf["VWAP"].iloc[-1]), 2)
-            ema9 = round(float(bdf["EMA9"].iloc[-1]), 2)
-            stv = round(float(bdf["ST"].iloc[-1]), 2) if not np.isnan(bdf["ST"].iloc[-1]) else ltp
-            stb = bdf["ST_Dir"].iloc[-1] == 1
-            ph, pl = round(float(bdf["High"].iloc[-2]), 2), round(float(bdf["Low"].iloc[-2]), 2)
+            rpnl = round((pltp - p["entry"]) * p["qty"], 2)
+            st.info(f"{'🟢' if rpnl>=0 else '🔴'} **Active Trade:** {p['sym']} | Qty: {p['qty']} | Entry: ₹{p['entry']} | LTP: ₹{pltp} | SL: ₹{p['sl']} | TGT: ₹{p['tgt']} | **Live P&L: ₹{rpnl:+,.2f}**")
 
-            c_vw = (ltp > vwap) if u_vw else True
-            c_em = (ltp > ema9) if u_em else True
-            c_st = (stb and ltp > stv) if u_st else True
-            c_bk = (ltp > ph) if u_bk else True
+            if st.button("🚨 EXIT TRADE NOW (Manual Exit)", type="primary", use_container_width=True):
+                ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
+                ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
+                ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": "MANUAL-EXIT", "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
+                ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] 🚨 MANUAL EXIT {p['sym']} @ ₹{pltp} | P&L: ₹{rpnl:+,.2f}")
+                ud["bot_pos"], ud["sound"] = None, "exit"
+                st.rerun()
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("LTP", f"₹{ltp}")
-            m2.metric("VWAP", f"₹{vwap}", "✅" if ltp > vwap else "❌")
-            m3.metric("9 EMA", f"₹{ema9}", "✅" if ltp > ema9 else "❌")
-            m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
-
-            if ud["bot_pos"] is not None:
-                p = ud["bot_pos"]
-                pltp = get_ltp(p["sym"]) or ltp
-                if ud["bot_on"] and u_tr and pltp > p.get("hi", p["entry"]):
-                    diff = pltp - p.get("hi", p["entry"])
-                    if diff >= t_step:
-                        ud["bot_pos"]["hi"] = pltp
-                        ud["bot_pos"]["sl"] = round(p["sl"] + diff, 2)
-                        p = ud["bot_pos"]
-
-                rpnl = round((pltp - p["entry"]) * p["qty"], 2)
-                st.info(f"{'🟢' if rpnl>=0 else '🔴'} **Active Trade:** {p['sym']} | Qty: {p['qty']} | Entry: ₹{p['entry']} | LTP: ₹{pltp} | SL: ₹{p['sl']} | TGT: ₹{p['tgt']} | **Live P&L: ₹{rpnl:+,.2f}**")
-
-                if st.button("🚨 EXIT TRADE NOW (Manual Exit)", type="primary", use_container_width=True, key="btn_man_exit"):
-                    ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
-                    ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
-                    ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": "MANUAL-EXIT", "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
+            with st.expander("✏️ Edit SL / Target Manually", expanded=False):
+                ec1, ec2, ec3 = st.columns(3)
