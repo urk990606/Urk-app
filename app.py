@@ -87,7 +87,8 @@ def get_data(sym, tf):
         tk = "CL=F" if is_c else sym
         m = get_usdinr() if is_c else 1.0
         pm = {"3m": ("2d", "1m"), "5m": ("2d", "5m"), "15m": ("5d", "15m"), "1D": ("6mo", "1d")}
-        df = yf.Ticker(tk).history(period=pm[tf][0], interval=pm[tf][1])
+        per, inter = pm[tf]
+        df = yf.Ticker(tk).history(period=per, interval=inter)
         if df.empty:
             return pd.DataFrame()
         if tf == "3m":
@@ -104,7 +105,8 @@ def get_data(sym, tf):
         hl2 = (df["High"] + df["Low"]) / 2
         ub, lb = hl2 + 3 * atr, hl2 - 3 * atr
         n = len(df)
-        st_l, d = [np.nan] * n, [1] * n
+        st_l = [np.nan for _ in range(n)]
+        d = [1 for _ in range(n)]
         for i in range(1, n):
             d[i] = 1 if df["Close"].iloc[i] > ub.iloc[i-1] else (-1 if df["Close"].iloc[i] < lb.iloc[i-1] else d[i-1])
             st_l[i] = lb.iloc[i] if d[i] == 1 else ub.iloc[i]
@@ -152,8 +154,12 @@ with t1:
     sq_t = dtime(23, 30) if is_crude else dtime(15, 25)
     st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Window: **{'09:00 - 23:30 (MCX)' if is_crude else '09:15 - 15:25 (NSE)'}** | Trades: **{ud['trades_today']}**")
 
-    ca, cb, cc = st.columns(3)
-    u_st, u_vw, u_em = ca.checkbox("Supertrend Bull", True), cb.checkbox("Above VWAP", True), cc.checkbox("Above 9 EMA", True)
+    ca, cb, cc, cd = st.columns(4)
+    u_st = ca.checkbox("Supertrend", True)
+    u_vw = cb.checkbox("VWAP", True)
+    u_em = cc.checkbox("9 EMA", True)
+    u_bk = cd.checkbox("Prev High", False)
+
     tc1, tc2, tc3 = st.columns((2, 1, 1))
     rr = tc1.slider("Target R:R:", 1.0, 5.0, 2.0, 0.5)
     u_tr = tc2.checkbox("Trailing SL", True)
@@ -182,15 +188,20 @@ with t1:
         stv = round(float(bdf["ST"].iloc[-1]), 2) if not np.isnan(bdf["ST"].iloc[-1]) else ltp
         stb = bdf["ST_Dir"].iloc[-1] == 1
         ph, pl = round(float(bdf["High"].iloc[-2]), 2), round(float(bdf["Low"].iloc[-2]), 2)
-        c_vw, c_em, c_st, c_bk = (ltp > vwap if u_vw else True), (ltp > ema9 if u_em else True), (stb and ltp > stv if u_st else True), (ltp > ph)
+
+        c_vw = (ltp > vwap) if u_vw else True
+        c_em = (ltp > ema9) if u_em else True
+        c_st = (stb and ltp > stv) if u_st else True
+        c_bk = (ltp > ph) if u_bk else True
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("LTP", f"₹{ltp}")
         m2.metric("VWAP", f"₹{vwap}", "✅" if ltp > vwap else "❌")
         m3.metric("9 EMA", f"₹{ema9}", "✅" if ltp > ema9 else "❌")
         m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
-        st.write(f"**Prev High:** `₹{ph}` {'✅ BREAK!' if c_bk else '⏳ Waiting'} | **Prev Low (SL):** `₹{pl}`")
+        st.write(f"**Prev High:** `₹{ph}` {'✅' if ltp > ph else '⏳'} | **Prev Low (SL):** `₹{pl}`")
 
+        # ACTIVE TRADE + MANUAL EXIT & SL/TGT CONTROLS
         if ud["bot_pos"] is not None:
             p = ud["bot_pos"]
             pltp = get_ltp(p["sym"]) or ltp
@@ -200,16 +211,15 @@ with t1:
                     ud["bot_pos"]["hi"] = pltp
                     ud["bot_pos"]["sl"] = round(p["sl"] + diff, 2)
                     p = ud["bot_pos"]
+
             rpnl = round((pltp - p["entry"]) * p["qty"], 2)
-            st.info(f"{'🟢' if rpnl>=0 else '🔴'} **Active:** {p['sym']} | Qty:{p['qty']} | Entry:₹{p['entry']} | LTP:₹{pltp} | SL:₹{p['sl']} | TGT:₹{p['tgt']} | **P&L: ₹{rpnl:+,.2f}**")
-            with st.expander("✏️ Edit SL / Target or Exit Now", expanded=True):
-                ec1, ec2, ec3 = st.columns(3)
-                nsl = ec1.number_input("SL (₹):", value=float(p["sl"]), step=0.5)
-                ntg = ec2.number_input("TGT (₹):", value=float(p["tgt"]), step=0.5)
-                if ec3.button("💾 Update", use_container_width=True):
-                    ud["bot_pos"]["sl"], ud["bot_pos"]["tgt"] = round(nsl, 2), round(ntg, 2)
-                    st.rerun()
-                if st.button("🚨 EXIT TRADE NOW", type="primary", use_container_width=True):
-                    ud["rpnl"], ud["cash"] = round(ud["rpnl"] + rpnl, 2), round(ud["cash"] + pltp * p["qty"], 2)
-                    ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": "MANUAL-EXIT", "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
-                    ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] 🚨 MANUAL EXIT {p['sym']} @ ₹{pltp} | P&L: ₹{rpnl:+,.2f}")
+            st.info(f"{'🟢' if rpnl>=0 else '🔴'} **Active Trade:** {p['sym']} | Qty: {p['qty']} | Entry: ₹{p['entry']} | LTP: ₹{pltp} | SL: ₹{p['sl']} | TGT: ₹{p['tgt']} | **Live P&L: ₹{rpnl:+,.2f}**")
+
+            # Direct Manual Exit Button (Always Visible when Trade is Open)
+            if st.button("🚨 EXIT TRADE NOW (Manual Exit)", type="primary", use_container_width=True):
+                ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
+                ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
+                ud["hist"].append({"Time": now_ist.strftime("%H:%M:%S"), "Asset": p["sym"], "Type": "MANUAL-EXIT", "Qty": p["qty"], "Price": pltp, "P&L": rpnl})
+                ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] 🚨 MANUAL EXIT {p['sym']} @ ₹{pltp} | P&L: ₹{rpnl:+,.2f}")
+                ud["bot_pos"], ud["sound"] = None, "exit"
+                st.rerun()
