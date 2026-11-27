@@ -156,7 +156,7 @@ with t1:
 
     ca, cb, cc, cd = st.columns(4)
     u_st = ca.checkbox("Supertrend", value=True)
-    u_vw = cb.checkbox("VWAP", value=True)
+    u_vw = cb.checkbox("VWAP", value=False)
     u_em = cc.checkbox("9 EMA", value=False)
     u_bk = cd.checkbox("Prev High", value=False)
 
@@ -169,11 +169,9 @@ with t1:
     if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
         ud["bot_on"] = True
         ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STARTED on {bot_sym}")
-        st.rerun()
     if b2.button("⏹️ STOP BOT", use_container_width=True):
         ud["bot_on"] = False
         ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STOPPED")
-        st.rerun()
     if b3.button("🔊 Beep", use_container_width=True, type="primary"):
         trigger_beep("buy")
 
@@ -203,6 +201,7 @@ with t1:
         m4.metric("Supertrend", f"₹{stv}", "✅" if (stb and ltp > stv) else "❌")
         st.write(f"**Prev High:** `₹{ph}` {'✅' if ltp > ph else '⏳'} | **Prev Low (SL):** `₹{pl}`")
 
+        # ACTIVE TRADE & MANUAL EXIT
         if ud["bot_pos"] is not None:
             p = ud["bot_pos"]
             pltp = get_ltp(p["sym"]) or ltp
