@@ -1,15 +1,14 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
 import time, io, wave, struct, math
-from datetime import datetime, time as dtime
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK Auto Trading V4 - Famous UT Bot", page_icon="🚀", layout="centered")
+st.set_page_config(page_title="URK 1-Min Auto Test Bot", page_icon="⏱️", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
+# ---------------- AUDIO BEEP GENERATOR ----------------
 @st.cache_data
 def make_wav(freq=950, dur=0.35):
     rate = 22050
@@ -27,30 +26,29 @@ def make_wav(freq=950, dur=0.35):
 def trigger_beep(kind="buy"):
     st.audio(make_wav(1000, 0.35) if kind == "buy" else make_wav(550, 0.5), format="audio/wav", autoplay=True)
 
+# ---------------- SESSION STATE DB ----------------
 if "db" not in st.session_state:
     st.session_state.db = {
         "admin": {
             "pw": "123",
             "cash": 100000.0,
-            "port": {},
             "hist": [],
             "rpnl": 0.0,
-            "wl": ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"],
             "bot_on": False,
             "bot_pos": None,
+            "last_action_ts": 0.0,
             "bot_logs": [],
-            "trades_today": 0,
-            "last_date": str(datetime.now(IST).date()),
             "sound": None,
         }
     }
 if "user" not in st.session_state:
     st.session_state.user = None
 
+# ---------------- LOGIN SCREEN ----------------
 if not st.session_state.user:
-    st.title("🚀 URK V4 Login")
+    st.title("⏱️ URK 1-Min Test Bot Login")
     u = st.text_input("Username", value="admin")
-    p = st.text_input("Password", type="password")
+    p = st.text_input("Password", type="password", value="123")
     if st.button("Login", type="primary"):
         if u in st.session_state.db and st.session_state.db[u]["pw"] == p:
             st.session_state.user = u
@@ -60,16 +58,11 @@ if not st.session_state.user:
     st.stop()
 
 ud = st.session_state.db[st.session_state.user]
-today_str = str(datetime.now(IST).date())
-if ud.get("last_date") != today_str:
-    ud["trades_today"], ud["last_date"] = 0, today_str
-for k, v in (("bot_on", False), ("bot_pos", None), ("bot_logs", []), ("trades_today", 0), ("sound", None)):
-    ud.setdefault(k, v)
-
-if ud["sound"]:
+if ud.get("sound"):
     trigger_beep(ud["sound"])
     ud["sound"] = None
 
+# ---------------- 24/7 LIVE PRICE FETCHING ----------------
 @st.cache_data(ttl=60)
 def get_usdinr():
     try:
@@ -80,107 +73,35 @@ def get_usdinr():
         pass
     return 84.5
 
-@st.cache_data(ttl=4)
+@st.cache_data(ttl=2)
 def get_ltp(sym):
     try:
-        is_c = (sym == "CRUDEOIL DEC FUT (₹)")
-        tk = "CL=F" if is_c else sym
-        m = get_usdinr() if is_c else 1.0
-        df = yf.Ticker(tk).history(period="2d", interval="1m")
-        if df.empty:
-            df = yf.Ticker(tk).history(period="5d", interval="15m")
+        tk = sym.replace(" (₹)", "")
+        m = get_usdinr()
+        if "BTC-USD" in sym:
+            m = m / 1000.0  # మినీ యూనిట్ (~₹7,500)
+        elif "ETH-USD" in sym:
+            m = m / 100.0   # మినీ యూనిట్ (~₹2,500)
+
+        df = yf.Ticker(tk).history(period="1d", interval="1m")
         if not df.empty:
             return round(float(df["Close"].iloc[-1]) * m, 2)
     except Exception:
         pass
     return None
 
-@st.cache_data(ttl=4)
-def get_data(sym, tf):
-    try:
-        is_c = (sym == "CRUDEOIL DEC FUT (₹)")
-        tk = "CL=F" if is_c else sym
-        m = get_usdinr() if is_c else 1.0
-        pm = {"3m": ("2d", "1m"), "5m": ("2d", "5m"), "15m": ("5d", "15m"), "1D": ("6mo", "1d")}
-        per, inter = pm[tf]
-        df = yf.Ticker(tk).history(period=per, interval=inter)
-        if df.empty:
-            return pd.DataFrame()
-        if tf == "3m":
-            df = df.resample("3min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}).dropna()
-        if is_c:
-            for col in ("Open", "High", "Low", "Close"):
-                df[col] = df[col] * m
-        return df
-    except Exception:
-        return pd.DataFrame()
-
-def calc_famous_ut_bot(df, key_value=1.5, atr_period=10, use_ha=True):
-    if df.empty or len(df) < atr_period + 3:
-        return df
-    df = df.copy()
-
-    if use_ha:
-        ha_close = (df["Open"] + df["High"] + df["Low"] + df["Close"]) / 4.0
-        ha_open = np.zeros(len(df))
-        ha_open[0] = (float(df["Open"].iloc[0]) + float(df["Close"].iloc[0])) / 2.0
-        ha_c_vals = ha_close.values
-        for i in range(1, len(df)):
-            ha_open[i] = (ha_open[i - 1] + ha_c_vals[i - 1]) / 2.0
-        ha_open_s = pd.Series(ha_open, index=df.index)
-        ha_high = pd.concat([df["High"], ha_open_s, ha_close], axis=1).max(axis=1)
-        ha_low = pd.concat([df["Low"], ha_open_s, ha_close], axis=1).min(axis=1)
-        src_close = ha_close
-        high_low = ha_high - ha_low
-        high_close = (ha_high - src_close.shift()).abs()
-        low_close = (ha_low - src_close.shift()).abs()
-    else:
-        src_close = df["Close"]
-        high_low = df["High"] - df["Low"]
-        high_close = (df["High"] - src_close.shift()).abs()
-        low_close = (df["Low"] - src_close.shift()).abs()
-
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    atr = tr.rolling(atr_period).mean()
-    n_loss = key_value * atr
-
-    trail = np.zeros(len(df))
-    c_vals = src_close.values
-    nl_vals = n_loss.values
-
-    for i in range(1, len(df)):
-        if np.isnan(nl_vals[i]):
-            trail[i] = c_vals[i]
-            continue
-        pt = trail[i - 1]
-        if c_vals[i] > pt and c_vals[i - 1] > pt:
-            trail[i] = max(pt, c_vals[i] - nl_vals[i])
-        elif c_vals[i] < pt and c_vals[i - 1] < pt:
-            trail[i] = min(pt, c_vals[i] + nl_vals[i])
-        elif c_vals[i] > pt:
-            trail[i] = c_vals[i] - nl_vals[i]
-        else:
-            trail[i] = c_vals[i] + nl_vals[i]
-
-    df["UT_Trail"] = trail
-    df["UT_Trend"] = np.where(c_vals > trail, "BULLISH", "BEARISH")
-    df["Buy_Signal"] = (src_close > df["UT_Trail"]) & (src_close.shift(1) <= df["UT_Trail"].shift(1))
-    df["Sell_Signal"] = (src_close < df["UT_Trail"]) & (src_close.shift(1) >= df["UT_Trail"].shift(1))
-    return df
-
+# ---------------- HEADER & P&L ----------------
 c1, c2 = st.columns((3, 1))
-c1.subheader(f"🚀 URK V4 | Cash: ₹{ud['cash']:,.2f}")
+c1.subheader(f"⏱️ 1-Min Auto Test | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
 
-inv_t = sum(v["qty"] * v["avg"] for v in ud["port"].values())
-cur_t = sum(v["qty"] * (get_ltp(k) or v["avg"]) for k, v in ud["port"].items())
+un_pnl = 0.0
 if isinstance(ud.get("bot_pos"), dict):
     bp = ud["bot_pos"]
-    inv_t += bp["qty"] * bp["entry"]
-    cur_t += bp["qty"] * (get_ltp(bp["sym"]) or bp["entry"])
-un_pnl = round(cur_t - inv_t, 2)
+    cur_p = get_ltp(bp["sym"]) or bp["entry"]
+    un_pnl = round((cur_p - bp["entry"]) * bp["qty"], 2)
 
 pm1, pm2, pm3 = st.columns(3)
 pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
@@ -188,68 +109,100 @@ pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
 pm3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
 st.divider()
 
-stocks = ["SBIN.NS", "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ITC.NS", "^NSEI", "^NSEBANK", "CRUDEOIL DEC FUT (₹)"]
-t1, t2, t3, t4 = st.tabs(["🤖 Famous UT Bot", "📊 Pro Chart", "⭐ Watchlist", "📜 History"])
+# ---------------- MAIN 1-MIN BUY / SELL ENGINE ----------------
+now_ist = datetime.now(IST)
+cryptos = ["BTC-USD (₹)", "ETH-USD (₹)", "SOL-USD (₹)"]
 
-with t1:
-    now_ist = datetime.now(IST)
-    curr_t = now_ist.time()
-    bc1, bc2, bc3, bc4 = st.columns(4)
-    bot_sym = bc1.selectbox("Asset:", stocks, index=0)
-    bot_tf = bc2.selectbox("TF:", ["3m", "5m", "15m"], index=0)
-    bot_qty = bc3.number_input("Qty:", 1, 1000, 10)
-    max_tr = bc4.number_input("Max Trades:", 1, 10, 5)
+col1, col2, col3 = st.columns(3)
+sym = col1.selectbox("24/7 Live Asset:", cryptos, index=0)
+qty = col2.number_input("Quantity:", 1, 100, 1)
+interval_sec = col3.number_input("Cycle Time (Sec):", 10, 300, 60)
 
-    uc1, uc2, uc3 = st.columns(3)
-    ut_key = uc1.number_input("Key Value:", 0.5, 5.0, 1.5, 0.5)
-    ut_atr = uc2.number_input("ATR Period:", 5, 30, 10, 1)
-    use_ha = uc3.checkbox("Heikin Ashi", value=True)
+b1, b2, b3 = st.columns((2, 2, 1))
+if b1.button("▶️ START 1-MIN LOOP", type="primary", use_container_width=True):
+    ud["bot_on"] = True
+    ud["last_action_ts"] = 0.0  # నొక్కగానే వెంటనే మొదటి BUY జరిగేలా
+    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 1-Min Auto Loop Started!")
+    st.rerun()
 
-    is_crude = (bot_sym == "CRUDEOIL DEC FUT (₹)")
-    in_win = (dtime(9, 0) <= curr_t <= dtime(23, 30)) if is_crude else (dtime(9, 15) <= curr_t <= dtime(15, 25))
-    sq_t = dtime(23, 30) if is_crude else dtime(15, 25)
-    st.caption(f"🕒 IST: **{now_ist.strftime('%H:%M:%S')}** | Window: **{'09:00 - 23:30 (MCX)' if is_crude else '09:15 - 15:25 (NSE)'}** | Trades: **{ud['trades_today']}**")
+if b2.button("⏹️ STOP LOOP", use_container_width=True):
+    ud["bot_on"] = False
+    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🛑 Loop Stopped.")
+    st.rerun()
 
-    tc1, tc2, tc3 = st.columns((2, 1, 1))
-    sl_pts = tc1.number_input("Stop Loss (₹):", 0.5, 500.0, 2.0, 0.5)
-    tgt_pts = tc2.number_input("Target (₹):", 0.5, 1000.0, 4.0, 0.5)
-    u_tr = tc3.checkbox("Trailing SL", value=True)
+if b3.button("🔄 Reset", use_container_width=True):
+    ud["bot_on"] = False
+    ud["bot_pos"] = None
+    ud["hist"] = []
+    ud["bot_logs"] = []
+    ud["cash"] = 100000.0
+    ud["rpnl"] = 0.0
+    st.rerun()
 
-    b1, b2, b3 = st.columns((2, 2, 1))
-    if b1.button("▶️ START BOT", use_container_width=True, type="primary"):
-        ud["bot_on"] = True
-        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Famous UT Bot STARTED on {bot_sym} ({bot_tf})")
-        st.rerun()
-    if b2.button("⏹️ STOP BOT", use_container_width=True):
-        ud["bot_on"] = False
-        ud["bot_logs"].append(f"[{now_ist.strftime('%H:%M:%S')}] Bot STOPPED")
-        st.rerun()
-    if b3.button("🔊 Beep", use_container_width=True):
-        trigger_beep("buy")
-
-    if ud["bot_on"]:
-        st.success(f"🟢 FAMOUS UT BOT RUNNING ({'Heikin Ashi' if use_ha else 'Standard'} | Key: {ut_key})")
-    else:
-        st.error("🔴 BOT STOPPED")
-
-    ltp = get_ltp(bot_sym)
-    df_bot = calc_famous_ut_bot(get_data(bot_sym, bot_tf), ut_key, ut_atr, use_ha)
+# ---------------- AUTO EXECUTION LOGIC ----------------
+if ud["bot_on"]:
+    ltp = get_ltp(sym)
+    now_ts = time.time()
+    elapsed = now_ts - ud["last_action_ts"]
+    remaining = max(0, int(interval_sec - elapsed))
 
     if ltp is not None:
-        if isinstance(ud.get("bot_pos"), dict):
-            p = ud["bot_pos"]
-            pltp = get_ltp(p["sym"]) or ltp
-            if ud["bot_on"] and u_tr and pltp > p.get("hi", p["entry"]):
-                diff = round(pltp - p.get("hi", p["entry"]), 2)
-                if diff >= 0.5:
-                    ud["bot_pos"]["hi"] = pltp
-                    ud["bot_pos"]["sl"] = round(p["sl"] + diff, 2)
-                    p = ud["bot_pos"]
+        st.info(f"🔄 **RUNNING** | Live **{sym}**: **₹{ltp:,.2f}** | Next Action in: **{remaining}s**")
 
-            rpnl = round((pltp - p["entry"]) * p["qty"], 2)
-            st.success(f"✅ **ACTIVE ORDER:** {p['sym']} | Qty: {p['qty']} | Entry: ₹{p['entry']} | LTP: ₹{pltp}")
-            st.info(f"{'🟢' if rpnl>=0 else '🔴'} **SL:** ₹{p['sl']} | **TGT:** ₹{p['tgt']} | **Live P&L: ₹{rpnl:+,.2f}**")
+        # 1. పొజిషన్ లేకపోతే -> 1 నిమిషం అవ్వగానే BUY చేయాలి
+        if ud["bot_pos"] is None and elapsed >= interval_sec:
+            cost = round(ltp * qty, 2)
+            if ud["cash"] >= cost:
+                ud["cash"] = round(ud["cash"] - cost, 2)
+                ud["bot_pos"] = {
+                    "sym": sym,
+                    "qty": qty,
+                    "entry": ltp,
+                    "time": now_ist.strftime("%H:%M:%S")
+                }
+                ud["last_action_ts"] = now_ts
+                ud["sound"] = "buy"
+                ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🟢 AUTO BUY: {qty} {sym} @ ₹{ltp:,.2f}")
+                st.rerun()
+            else:
+                st.error("Insufficient Cash!")
 
-            if st.button("🚨 EXIT TRADE NOW (Manual Exit)", type="primary", use_container_width=True):
-                ud["rpnl"] = round(ud["rpnl"] + rpnl, 2)
-                ud["cash"] = round(ud["cash"] + pltp * p["qty"], 2)
+        # 2. పొజిషన్ ఉంటే -> సరిగ్గా 1 నిమిషం తర్వాత SELL చేయాలి
+        elif isinstance(ud["bot_pos"], dict) and elapsed >= interval_sec:
+            bp = ud["bot_pos"]
+            pnl = round((ltp - bp["entry"]) * bp["qty"], 2)
+            ud["cash"] = round(ud["cash"] + (ltp * bp["qty"]), 2)
+            ud["rpnl"] = round(ud["rpnl"] + pnl, 2)
+            ud["hist"].insert(0, {
+                "Buy Time": bp["time"],
+                "Sell Time": now_ist.strftime("%H:%M:%S"),
+                "Asset": bp["sym"],
+                "Qty": bp["qty"],
+                "Buy Price": bp["entry"],
+                "Sell Price": ltp,
+                "P&L (₹)": pnl
+            })
+            ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🔴 AUTO SELL: {bp['qty']} {bp['sym']} @ ₹{ltp:,.2f} | P&L: ₹{pnl:+,.2f}")
+            ud["bot_pos"] = None
+            ud["last_action_ts"] = now_ts
+            ud["sound"] = "sell"
+            st.rerun()
+
+    time.sleep(2)
+    st.rerun()
+
+# ---------------- ACTIVE POSITION & TABLES ----------------
+if isinstance(ud.get("bot_pos"), dict):
+    bp = ud["bot_pos"]
+    cur_p = get_ltp(bp["sym"]) or bp["entry"]
+    live_pnl = round((cur_p - bp["entry"]) * bp["qty"], 2)
+    st.success(f"📌 **Holding Position:** {bp['qty']} {bp['sym']} | Bought @ ₹{bp['entry']:,.2f} | Live: ₹{cur_p:,.2f} | Live P&L: **₹{live_pnl:+,.2f}**")
+
+if ud["hist"]:
+    st.subheader("📋 Completed Orders (1-Min Buy/Sell History)")
+    st.dataframe(pd.DataFrame(ud["hist"]), use_container_width=True)
+
+if ud["bot_logs"]:
+    st.subheader("📜 Live Execution Logs")
+    for log in ud["bot_logs"][:15]:
+        st.text(log)
