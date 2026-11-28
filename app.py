@@ -1,5 +1,6 @@
 import streamlit as st
 import streamlit.components.v1 as components
+import yfinance as yf
 import requests
 import pandas as pd
 import time, io, wave, struct, math
@@ -60,45 +61,41 @@ ud = st.session_state.db[st.session_state.user]
 def get_live_ltp(sym):
     div_map = {"BTC-USD (₹)": 1000.0, "ETH-USD (₹)": 100.0, "SOL-USD (₹)": 1.0}
     m = 87.5 / div_map.get(sym, 1.0)
+    tk = sym.replace(" (₹)", "")
+    errors = []
 
-    coin = "BTC"
-    if "ETH" in sym:
-        coin = "ETH"
-    elif "SOL" in sym:
-        coin = "SOL"
-
-    # 1. KuCoin Public Ticker (Never blocks cloud IPs)
+    # 1. మీ పాత కోడ్‌లో పనిచేసిన Yahoo Finance (fast_info & history)
     try:
-        r = requests.get(f"https://kucoin.com{coin}-USDT", timeout=5).json()
-        price = float(r.get("data", {}).get("price", 0))
-        if price > 0:
-            return round(price * m, 2), "KuCoin"
-    except Exception:
-        pass
+        t = yf.Ticker(tk)
+        p = t.fast_info.get("lastPrice")
+        if p and float(p) > 0:
+            return round(float(p) * m, 2), "Yahoo Live", ""
+        df = t.history(period="1d", interval="1m")
+        if not df.empty:
+            return round(float(df["Close"].iloc[-1]) * m, 2), "Yahoo 1m", ""
+    except Exception as e:
+        errors.append(f"YF: {e}")
 
-    # 2. Bitstamp Public Ticker (Super reliable)
+    # 2. Coinbase Public API
     try:
-        pair = f"{coin.lower()}usd"
-        r = requests.get(f"https://bitstamp.net{pair}/", timeout=5).json()
-        price = float(r.get("last", 0))
-        if price > 0:
-            return round(price * m, 2), "Bitstamp"
-    except Exception:
-        pass
+        r = requests.get(f"https://coinbase.com{tk}/spot", timeout=4).json()
+        p = float(r.get("data", {}).get("amount", 0))
+        if p > 0:
+            return round(p * m, 2), "Coinbase", ""
+    except Exception as e:
+        errors.append(f"CB: {e}")
 
-    # 3. OKX Public Ticker
+    # 3. Gemini Public API
     try:
-        r = requests.get(f"https://okx.com{coin}-USDT", timeout=5).json()
-        data = r.get("data")
-        if data:
-            first = next(iter(data))
-            price = float(first.get("last", 0))
-            if price > 0:
-                return round(price * m, 2), "OKX"
-    except Exception:
-        pass
+        g_sym = tk.replace("-", "").lower()
+        r = requests.get(f"https://gemini.com{g_sym}", timeout=4).json()
+        p = float(r.get("last", 0))
+        if p > 0:
+            return round(p * m, 2), "Gemini", ""
+    except Exception as e:
+        errors.append(f"GM: {e}")
 
-    return None, None
+    return None, None, " | ".join(errors)
 
 c1, c2 = st.columns((3, 1))
 c1.subheader("📈 Live 1-Min Auto Test")
@@ -171,7 +168,7 @@ def live_bot_engine():
         ud["sound"] = None
 
     now_ist = datetime.now(IST)
-    ltp, src = get_live_ltp(sym)
+    ltp, src, err_info = get_live_ltp(sym)
 
     un_pnl = 0.0
     if isinstance(ud.get("bot_pos"), dict):
@@ -188,7 +185,7 @@ def live_bot_engine():
     if ltp is not None:
         st.success(f"🟢 Live Scaled Price ({sym} via {src}): **₹{ltp:,.2f}** | {now_ist.strftime('%H:%M:%S')} IST")
     else:
-        st.warning("Fetching live price...")
+        st.error(f"Data Fetch Failed: {err_info}")
 
     if ud["bot_on"] and ltp is not None:
         now_ts = time.time()
