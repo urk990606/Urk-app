@@ -16,7 +16,7 @@ BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
 SYMBOL = "BTCUSDT"
 TIMEFRAMES = {"1 minute": "1m", "3 minutes": "3m", "5 minutes": "5m", "15 minutes": "15m"}
 
-st.title("₿ BTCUSDT – EMA 9 / EMA 21 Paper Trading")
+st.title("₿ BTCUSDT – EMA 3 / EMA 8 Paper Trading")
 st.caption("Live public Binance data • Paper trading only • Not financial advice")
 
 # ---- Session state ----
@@ -68,7 +68,7 @@ with st.sidebar:
     qty_btc = st.number_input("Paper quantity (BTC)", min_value=0.0001, max_value=1.0,
                               value=0.001, step=0.0001, format="%.4f")
     refresh_seconds = st.slider("Refresh interval (seconds)", 2, 15, 3)
-    st.caption("BUY: EMA9 crosses above EMA21 on a completed candle.")
+    st.caption("BUY: EMA3 crosses above EMA8 on a completed candle.")
     st.caption("Entry: crossover candle close • SL: previous candle low.")
     st.caption("TSL: previous completed candle low; it only moves upward.")
 
@@ -94,8 +94,8 @@ def fetch_candles(interval: str, limit: int = 300):
     df["open_time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
     df["close_time"] = pd.to_datetime(df["close_time"], unit="ms", utc=True)
     df = df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
-    df["ema9"] = df["close"].ewm(span=9, adjust=False).mean()
-    df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
+    df["ema9"] = df["close"].ewm(span=3, adjust=False).mean()
+    df["ema21"] = df["close"].ewm(span=8, adjust=False).mean()
     return df
 
 try:
@@ -234,7 +234,7 @@ def process_strategy():
                     st.session_state.trade_log.insert(0, {
                         "Time (UTC)": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
                         "Side": "BUY",
-                        "Reason": "EMA 9/21 CROSSOVER",
+                        "Reason": "EMA 3/8 CROSSOVER",
                         "Entry": entry,
                         "Exit": None,
                         "Qty BTC": float(qty_btc),
@@ -310,9 +310,9 @@ fig.add_trace(go.Candlestick(
     low=plot_df["low"], close=plot_df["close"], name="BTCUSDT"
 ))
 fig.add_trace(go.Scatter(x=plot_df["open_time"], y=plot_df["ema9"],
-                         mode="lines", name="EMA 9", line=dict(width=1.5)))
+                         mode="lines", name="EMA 3", line=dict(width=1.5)))
 fig.add_trace(go.Scatter(x=plot_df["open_time"], y=plot_df["ema21"],
-                         mode="lines", name="EMA 21", line=dict(width=1.5)))
+                         mode="lines", name="EMA 8", line=dict(width=1.5)))
 position = st.session_state.position
 if isinstance(position, dict):
     entry_level = position.get("entry")
