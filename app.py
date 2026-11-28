@@ -1,7 +1,7 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
 import pandas as pd
-import plotly.graph_objects as go
 import time, io, wave, struct, math
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -57,59 +57,36 @@ if not st.session_state.user:
 
 ud = st.session_state.db[st.session_state.user]
 
-def get_multiplier(sym):
-    m = 87.5
-    if "BTC" in sym:
-        return m / 1000.0
-    elif "ETH" in sym:
-        return m / 100.0
-    return m
+def get_live_ltp(sym):
+    # CoinGecko & Coinbase Simple Ticker (No Brackets Used)
+    cg_map = {"BTC-USD (₹)": "bitcoin", "ETH-USD (₹)": "ethereum", "SOL-USD (₹)": "solana"}
+    cb_map = {"BTC-USD (₹)": "BTC-USD", "ETH-USD (₹)": "ETH-USD", "SOL-USD (₹)": "SOL-USD"}
+    div_map = {"BTC-USD (₹)": 1000.0, "ETH-USD (₹)": 100.0, "SOL-USD (₹)": 1.0}
 
-def get_live_chart_and_ltp(sym):
-    coin = sym.split("-")  # ఇక్కడ ఖచ్చితంగా  ఉండాలి!
-    m = get_multiplier(sym)
+    m = 87.5 / div_map.get(sym, 1.0)
     headers = {"User-Agent": "Mozilla/5.0"}
-    err_msg = ""
 
-    # 1. Coinbase Exchange Public API (US & Global 100% Working)
+    # 1. Coinbase Ticker
     try:
-        cb_url = f"https://coinbase.com{coin}-USD/candles?granularity=60"
-        res = requests.get(cb_url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                df = pd.DataFrame(data[:60], columns=["time", "Low", "High", "Open", "Close", "Volume"])
-                df["time"] = pd.to_datetime(df["time"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST)
-                df.set_index("time", inplace=True)
-                df.sort_index(inplace=True)
-                for col in ("Open", "High", "Low", "Close"):
-                    df[col] = df[col].astype(float) * m
-                return df, round(float(df["Close"].iloc[-1]), 2), "Coinbase Live", ""
-        else:
-            err_msg += f"CB Status: {res.status_code} | "
-    except Exception as e:
-        err_msg += f"CB Err: {e} | "
+        pair = cb_map.get(sym, "BTC-USD")
+        r = requests.get(f"https://coinbase.com{pair}/spot", headers=headers, timeout=4).json()
+        price = float(r.get("data", {}).get("amount", 0))
+        if price > 0:
+            return round(price * m, 2)
+    except Exception:
+        pass
 
-    # 2. Kraken Public API (Second Backup)
+    # 2. CoinGecko Ticker (Backup)
     try:
-        kr_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
-        kr_url = f"https://kraken.com{kr_pair}&interval=1"
-        res = requests.get(kr_url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            j = res.json()
-            if not j.get("error"):
-                key = list(j["result"].keys())
-                data = j["result"][key][-60:]
-                df = pd.DataFrame(data, columns=["time", "Open", "High", "Low", "Close", "vwap", "Volume", "count"])
-                df["time"] = pd.to_datetime(df["time"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST)
-                df.set_index("time", inplace=True)
-                for col in ("Open", "High", "Low", "Close"):
-                    df[col] = df[col].astype(float) * m
-                return df, round(float(df["Close"].iloc[-1]), 2), "Kraken Live", ""
-    except Exception as e:
-        err_msg += f"KR Err: {e}"
+        cid = cg_map.get(sym, "bitcoin")
+        r = requests.get(f"https://coingecko.com{cid}&vs_currencies=usd", headers=headers, timeout=4).json()
+        price = float(r.get(cid, {}).get("usd", 0))
+        if price > 0:
+            return round(price * m, 2)
+    except Exception:
+        pass
 
-    return pd.DataFrame(), None, None, err_msg
+    return None
 
 c1, c2 = st.columns((3, 1))
 c1.subheader("📈 Live 1-Min Auto Test")
@@ -146,16 +123,46 @@ if b3.button("🔄 Reset", use_container_width=True):
     ud["rpnl"] = 0.0
     st.rerun()
 
-st.divider()
+# ---------------- 100% REAL-TIME TRADINGVIEW CHART ----------------
+tv_sym = "BINANCE:BTCUSDT"
+if "ETH" in sym:
+    tv_sym = "BINANCE:ETHUSDT"
+elif "SOL" in sym:
+    tv_sym = "BINANCE:SOLUSDT"
 
-@st.fragment(run_every=2)
-def live_trading_dashboard():
+tv_html = f"""
+<div class="tradingview-widget-container">
+  <div id="tv_chart" style="height:380px;"></div>
+  <script type="text/javascript" src="https://tradingview.com"></script>
+  <script type="text/javascript">
+  new TradingView.widget({{
+    "autosize": true,
+    "symbol": "{tv_sym}",
+    "interval": "1",
+    "timezone": "Asia/Kolkata",
+    "theme": "dark",
+    "style": "1",
+    "locale": "en",
+    "toolbar_bg": "#f1f3f6",
+    "enable_publishing": false,
+    "hide_top_toolbar": false,
+    "save_image": false,
+    "container_id": "tv_chart"
+  }});
+  </script>
+</div>
+"""
+components.html(tv_html, height=390)
+
+# ---------------- LIVE BOT ENGINE (EVERY 3 SECONDS) ----------------
+@st.fragment(run_every=3)
+def live_bot_engine():
     if ud.get("sound"):
         trigger_beep(ud["sound"])
         ud["sound"] = None
 
     now_ist = datetime.now(IST)
-    df_ch, ltp, source, err_msg = get_live_chart_and_ltp(sym)
+    ltp = get_live_ltp(sym)
 
     un_pnl = 0.0
     if isinstance(ud.get("bot_pos"), dict):
@@ -169,34 +176,10 @@ def live_trading_dashboard():
     m2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
     m3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
 
-    if not df_ch.empty:
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(
-            x=df_ch.index,
-            open=df_ch["Open"],
-            high=df_ch["High"],
-            low=df_ch["Low"],
-            close=df_ch["Close"],
-            name=sym
-        ))
-        if isinstance(ud.get("bot_pos"), dict) and ud["bot_pos"]["sym"] == sym:
-            fig.add_hline(
-                y=ud["bot_pos"]["entry"],
-                line_dash="dash",
-                line_color="lime",
-                annotation_text=f"🟢 BOUGHT @ ₹{ud['bot_pos']['entry']:,.2f}",
-                annotation_position="top left"
-            )
-        fig.update_layout(
-            title=f"{sym} - {source} 1-Min Chart (LTP: ₹{ltp:,.2f})",
-            height=380,
-            margin=dict(l=10, r=10, t=35, b=10),
-            xaxis_rangeslider_visible=False,
-            template="plotly_dark"
-        )
-        st.plotly_chart(fig, use_container_width=True)
+    if ltp is not None:
+        st.caption(f"🟢 Live Scaled Price ({sym}): **₹{ltp:,.2f}** | Time: {now_ist.strftime('%H:%M:%S')} IST")
     else:
-        st.warning(f"లైవ్ డేటా లోడ్ అవుతోంది... ({err_msg})")
+        st.warning("Fetching live price...")
 
     if ud["bot_on"] and ltp is not None:
         now_ts = time.time()
@@ -265,3 +248,7 @@ def live_trading_dashboard():
 
     if ud["bot_logs"]:
         st.subheader("📜 Live Execution Logs")
+        for log in ud["bot_logs"][:15]:
+            st.text(log)
+
+live_bot_engine()
