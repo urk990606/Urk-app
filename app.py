@@ -7,7 +7,7 @@ import time
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK Pro Auto Bot", page_icon="🚀", layout="centered")
+st.set_page_config(page_title="URK 2-Candle Momentum + TSL", page_icon="🚀", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
 def play_beep_js(kind="buy"):
@@ -38,7 +38,7 @@ if "user" not in st.session_state:
     st.session_state.user = None
 
 if not st.session_state.user:
-    st.title("🚀 URK Pro Bot Login")
+    st.title("🚀 URK App Login")
     u = st.text_input("Username", value="admin")
     p = st.text_input("Password", type="password", value="123")
     if st.button("Login", type="primary"):
@@ -93,8 +93,13 @@ def get_chart_and_ema(sym, tf):
         pass
     return pd.DataFrame()
 
+def calc_live_pnl(bp, ltp):
+    if bp["side"] == "BUY":
+        return round((ltp - bp["entry"]) * bp["qty"], 2)
+    return round((bp["entry"] - ltp) * bp["qty"], 2)
+
 def run_bot_step(ud, df_live, sym, tf, qty, init_sl_pts, trail_gap_pts, ignore_mkt_hrs, now_ist):
-    if not ud["bot_on"] or df_live.empty:
+    if not ud["bot_on"] or len(df_live) < 3:
         return
     is_crypto = sym.endswith("-USD (₹)")
     in_mkt = True if (is_crypto or ignore_mkt_hrs) else (dtime(9, 15) <= now_ist.time() <= dtime(15, 25))
@@ -102,56 +107,98 @@ def run_bot_step(ud, df_live, sym, tf, qty, init_sl_pts, trail_gap_pts, ignore_m
         st.warning("⏳ NSE మార్కెట్ సమయం ముగిసింది.")
         return
 
-    cc = df_live.iloc[-1]
+    prev_c = df_live.iloc[-2]  # క్లోజ్ అయిన మునుపటి క్యాండిల్
+    curr_c = df_live.iloc[-1]  # ప్రస్తుతం నడుస్తున్న క్యాండిల్
     cid = f"{tf}_{str(df_live.index[-1])}"
-    co, ccl, cema = float(cc["Open"]), float(cc["Close"]), float(cc["EMA9"])
+
+    p_open, p_close = float(prev_c["Open"]), float(prev_c["Close"])
+    c_open, c_close = float(curr_c["Open"]), float(curr_c["Close"])
+
+    prev_green = p_close > p_open
+    prev_red = p_close < p_open
+    curr_green = c_close > c_open
+    curr_red = c_close < c_open
+
     tf_m = int(tf.replace("m", ""))
     rem_s = (tf_m * 60) - ((now_ist.minute % tf_m) * 60 + now_ist.second)
-    st.info(f"🔄 **SCANNING ({tf})** | LTP: **₹{ccl:,.2f}** | 9 EMA: **₹{cema:,.2f}** | **{'🟢 GREEN' if ccl >= co else '🔴 RED'}** | Closes in: **{rem_s}s**")
+    p_lbl = "🟢 GREEN" if prev_green else ("🔴 RED" if prev_red else "⚪ DOJI")
+    c_lbl = "🟢 GREEN" if curr_green else ("🔴 RED" if curr_red else "⚪ DOJI")
+    st.info(f"🔄 **SCANNING ({tf})** | Closed Candle: **{p_lbl}** | Current: **{c_lbl}** | LTP: **₹{c_close:,.2f}** | Closes in: **{rem_s}s**")
 
+    # 1. NO POSITION -> CHECK 2 CONSECUTIVE GREEN OR 2 CONSECUTIVE RED
     if ud["bot_pos"] is None:
-        crossed_up = (ccl > co) and (co <= cema) and (ccl > cema)
-        if crossed_up and (cid not in ud["traded_candles"]):
-            cost = round(ccl * qty, 2)
-            if ud["cash"] >= cost:
-                ep = round(ccl, 2)
-                ud["cash"] = round(ud["cash"] - cost, 2)
-                ud["bot_pos"] = {"sym": sym, "tf": tf, "qty": qty, "entry": ep, "high": ep, "sl": round(ep - init_sl_pts, 2), "candle_id": cid, "buy_time": now_ist.strftime("%H:%M:%S")}
-                ud["traded_candles"].append(cid)
-                ud["sound"] = "buy"
-                ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🟢 BUY: {qty} {sym} @ ₹{ep:,.2f}")
-                st.rerun()
+        if cid in ud["traded_candles"]:
+            return
+        cost = round(c_close * qty, 2)
+        if ud["cash"] < cost:
+            return
+
+        # A) BUY: మునుపటి క్యాండిల్ GREEN క్లోజ్ అయ్యి + ప్రస్తుత క్యాండిల్ కూడా GREEN అయితే BUY
+        if prev_green and curr_green:
+            ep = round(c_close, 2)
+            ud["cash"] = round(ud["cash"] - cost, 2)
+            ud["bot_pos"] = {"side": "BUY", "sym": sym, "tf": tf, "qty": qty, "entry": ep, "best": ep, "sl": round(ep - init_sl_pts, 2), "candle_id": cid, "buy_time": now_ist.strftime("%H:%M:%S")}
+            ud["traded_candles"].append(cid)
+            ud["sound"] = "buy"
+            ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🟢 2-GREEN BUY: {qty} {sym} @ ₹{ep:,.2f}")
+            st.rerun()
+
+        # B) SHORT SELL: మునుపటి క్యాండిల్ RED క్లోజ్ అయ్యి + ప్రస్తుత క్యాండిల్ కూడా RED అయితే SELL
+        elif prev_red and curr_red:
+            ep = round(c_close, 2)
+            ud["cash"] = round(ud["cash"] - cost, 2)
+            ud["bot_pos"] = {"side": "SELL", "sym": sym, "tf": tf, "qty": qty, "entry": ep, "best": ep, "sl": round(ep + init_sl_pts, 2), "candle_id": cid, "buy_time": now_ist.strftime("%H:%M:%S")}
+            ud["traded_candles"].append(cid)
+            ud["sound"] = "sell"
+            ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🔴 2-RED SHORT SELL: {qty} {sym} @ ₹{ep:,.2f}")
+            st.rerun()
         return
 
+    # 2. MANAGE OPEN POSITION WITH TRAILING SL & REVERSAL EXIT
     bp = ud["bot_pos"]
-    cp = round(ccl, 2)
-    if cp > bp["high"]:
-        bp["high"] = cp
-        nsl = round(bp["high"] - trail_gap_pts, 2)
-        if cp > (bp["entry"] + trail_gap_pts) and nsl <= bp["entry"]:
-            nsl = round(bp["entry"] + 0.50, 2)
-        if nsl > bp["sl"]:
-            bp["sl"] = nsl
-
+    cp = round(c_close, 2)
     reason = None
-    if cp <= bp["sl"]:
-        reason = "🔒 LOCKED TSL HIT" if bp["sl"] > bp["entry"] else "🛑 INITIAL SL HIT"
-    elif (cid != bp["candle_id"]) and (ccl < co):
-        reason = "🔴 RED CANDLE SELL"
+
+    if bp["side"] == "BUY":
+        if cp > bp["best"]:
+            bp["best"] = cp
+            nsl = round(bp["best"] - trail_gap_pts, 2)
+            if cp > (bp["entry"] + trail_gap_pts) and nsl <= bp["entry"]:
+                nsl = round(bp["entry"] + 0.50, 2)
+            if nsl > bp["sl"]:
+                bp["sl"] = nsl
+        if cp <= bp["sl"]:
+            reason = "🔒 LOCKED TSL HIT" if bp["sl"] > bp["entry"] else "🛑 INITIAL SL HIT"
+        elif (cid != bp["candle_id"]) and curr_red:
+            reason = "🔴 RED CANDLE EXIT"
+
+    elif bp["side"] == "SELL":
+        if cp < bp["best"]:
+            bp["best"] = cp
+            nsl = round(bp["best"] + trail_gap_pts, 2)
+            if cp < (bp["entry"] - trail_gap_pts) and nsl >= bp["entry"]:
+                nsl = round(bp["entry"] - 0.50, 2)
+            if nsl < bp["sl"]:
+                bp["sl"] = nsl
+        if cp >= bp["sl"]:
+            reason = "🔒 LOCKED TSL HIT" if bp["sl"] < bp["entry"] else "🛑 INITIAL SL HIT"
+        elif (cid != bp["candle_id"]) and curr_green:
+            reason = "🟢 GREEN CANDLE EXIT"
 
     if reason:
-        pnl = round((cp - bp["entry"]) * bp["qty"], 2)
-        ud["cash"] = round(ud["cash"] + (cp * bp["qty"]), 2)
+        pnl = calc_live_pnl(bp, cp)
+        margin_back = round(bp["entry"] * bp["qty"], 2)
+        ud["cash"] = round(ud["cash"] + margin_back + pnl, 2)
         ud["rpnl"] = round(ud["rpnl"] + pnl, 2)
-        ud["hist"].insert(0, {"TF": bp["tf"], "Buy": bp["buy_time"], "Sell": now_ist.strftime("%H:%M:%S"), "Asset": bp["sym"], "Qty": bp["qty"], "Entry": bp["entry"], "Exit": cp, "Reason": reason, "P&L": pnl})
-        ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] {reason} -> SOLD @ ₹{cp:,.2f} | P&L: ₹{pnl:+,.2f}")
+        ud["hist"].insert(0, {"Side": bp["side"], "TF": bp["tf"], "Entry Time": bp["buy_time"], "Exit Time": now_ist.strftime("%H:%M:%S"), "Asset": bp["sym"], "Qty": bp["qty"], "Entry": bp["entry"], "Exit": cp, "Reason": reason, "P&L": pnl})
+        ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] {reason} ({bp['side']}) @ ₹{cp:,.2f} | P&L: ₹{pnl:+,.2f}")
         ud["bot_pos"] = None
         ud["sound"] = "sell"
         st.rerun()
 
 # ---------------- UI LAYOUT ----------------
 c1, c2 = st.columns((3, 1))
-c1.subheader(f"🚀 URK Pro Bot | Cash: ₹{ud['cash']:,.2f}")
+c1.subheader(f"🚀 URK 2-Candle Bot | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
@@ -173,7 +220,7 @@ ignore_mkt_hrs = sc3.checkbox("24/7 Test Mode", value=True)
 df_live = get_chart_and_ema(sym, tf)
 ltp = round(float(df_live["Close"].iloc[-1]), 2) if not df_live.empty else None
 
-un_pnl = round((ltp - ud["bot_pos"]["entry"]) * ud["bot_pos"]["qty"], 2) if (isinstance(ud.get("bot_pos"), dict) and ltp) else 0.0
+un_pnl = calc_live_pnl(ud["bot_pos"], ltp) if (isinstance(ud.get("bot_pos"), dict) and ltp) else 0.0
 pm1, pm2, pm3 = st.columns(3)
 pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
 pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
@@ -184,46 +231,10 @@ now_ist = datetime.now(IST)
 b1, b2, b3 = st.columns((2, 2, 1))
 if b1.button("▶️ START BOT", type="primary", use_container_width=True):
     ud["bot_on"] = True
-    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 Bot Started ({sym} - {tf})")
+    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 2-Candle Bot Started ({sym} - {tf})")
     st.rerun()
 if b2.button("⏹️ STOP BOT", use_container_width=True):
     ud["bot_on"] = False
     ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🛑 Bot Stopped.")
     st.rerun()
 if b3.button("🔄 Reset", use_container_width=True):
-    ud.update({"bot_on": False, "bot_pos": None, "hist": [], "bot_logs": [], "traded_candles": [], "cash": 100000.0, "rpnl": 0.0})
-    st.rerun()
-
-if not df_live.empty:
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df_live.index, open=df_live["Open"], high=df_live["High"], low=df_live["Low"], close=df_live["Close"], name="Price"))
-    fig.add_trace(go.Scatter(x=df_live.index, y=df_live["EMA9"], mode="lines", line=dict(color="#FFD700", width=2), name="9 EMA"))
-    if isinstance(ud.get("bot_pos"), dict):
-        bp = ud["bot_pos"]
-        fig.add_hline(y=bp["entry"], line_dash="dash", line_color="lime", annotation_text=f"🟢 BUY @ ₹{bp['entry']:,.2f}", annotation_position="top left")
-        sl_c = "#00FFAA" if bp["sl"] > bp["entry"] else "#FF4B4B"
-        sl_t = f"🔒 LOCKED TSL @ ₹{bp['sl']:,.2f}" if bp["sl"] > bp["entry"] else f"🛑 TSL @ ₹{bp['sl']:,.2f}"
-        fig.add_hline(y=bp["sl"], line_dash="dot", line_color=sl_c, annotation_text=sl_t, annotation_position="bottom left")
-    fig.update_layout(title=f"{sym} ({tf}) - 9 EMA & TSL Chart", height=360, margin=dict(l=10, r=10, t=35, b=10), xaxis_rangeslider_visible=False, template="plotly_dark")
-    st.plotly_chart(fig, use_container_width=True)
-
-if isinstance(ud.get("bot_pos"), dict) and ltp is not None:
-    bp = ud["bot_pos"]
-    st.caption("🎛️ **Chart TSL Quick Adjust:**")
-    tc1, tc2, tc3, tc4 = st.columns((1, 1, 1.5, 1))
-    if tc1.button("⬆️ +₹1 TSL", use_container_width=True):
-        bp["sl"] = round(bp["sl"] + 1.0, 2)
-        st.rerun()
-    if tc2.button("⬇️ -₹1 TSL", use_container_width=True):
-        bp["sl"] = round(bp["sl"] - 1.0, 2)
-        st.rerun()
-    c_sl = tc3.number_input("SL", value=float(bp["sl"]), step=0.5, label_visibility="collapsed")
-    if tc4.button("Set TSL", use_container_width=True):
-        bp["sl"] = round(c_sl, 2)
-        st.rerun()
-
-st.subheader("📌 Current Position")
-if isinstance(ud.get("bot_pos"), dict) and ltp is not None:
-    bp = ud["bot_pos"]
-    live_pnl = round((ltp - bp["entry"]) * bp["qty"], 2)
-    locked_pnl = round((bp["sl"] - bp["entry"]) * bp["qty"], 2)
