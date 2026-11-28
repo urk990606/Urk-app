@@ -6,7 +6,7 @@ import time, io, wave, struct, math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK High-Low Breakout Bot", page_icon="📈", layout="centered")
+st.set_page_config(page_title="URK Breakout + Candle SL Bot", page_icon="📈", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
 # ---------------- AUDIO BEEP GENERATOR ----------------
@@ -47,7 +47,7 @@ if "user" not in st.session_state:
 
 # ---------------- LOGIN SCREEN ----------------
 if not st.session_state.user:
-    st.title("📈 URK High-Low Breakout Bot Login")
+    st.title("📈 URK Breakout + SL Bot Login")
     u = st.text_input("Username", value="admin")
     p = st.text_input("Password", type="password", value="123")
     if st.button("Login", type="primary"):
@@ -86,7 +86,7 @@ def get_chart_data(sym):
 
         df = yf.Ticker(tk).history(period="1d", interval="1m")
         if not df.empty:
-            df = df.tail(60).copy()  # చివరి 60 నిమిషాల క్యాండిల్స్
+            df = df.tail(60).copy()
             for col in ("Open", "High", "Low", "Close"):
                 df[col] = df[col] * m
             return df
@@ -96,7 +96,7 @@ def get_chart_data(sym):
 
 # ---------------- HEADER & P&L ----------------
 c1, c2 = st.columns((3, 1))
-c1.subheader(f"📈 Breakout Bot | Cash: ₹{ud['cash']:,.2f}")
+c1.subheader(f"📈 Breakout + SL Bot | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
@@ -107,20 +107,20 @@ cryptos = ["BTC-USD (₹)", "ETH-USD (₹)", "SOL-USD (₹)"]
 col1, col2, col3 = st.columns(3)
 sym = col1.selectbox("24/7 Live Asset:", cryptos, index=0)
 qty = col2.number_input("Quantity:", 1, 100, 1)
-trade_mode = col3.selectbox("Trade Mode:", ["Both (High & Low)", "Only Buy (High Break)", "Only Short (Low Break)"])
+trade_mode = col3.selectbox("Trade Mode:", ["Both (High & Low)", "Only Buy (Green)", "Only Short (Red)"])
 
 # డేటా తెచ్చుకోవడం
 df_ch = get_chart_data(sym)
 cur_p = round(float(df_ch["Close"].iloc[-1]), 2) if not df_ch.empty else None
 
-# Unrealized P&L లెక్కింపు (BUY మరియు SHORT రెండింటికీ)
+# Unrealized P&L లెక్కింపు
 un_pnl = 0.0
 if isinstance(ud.get("bot_pos"), dict):
     bp = ud["bot_pos"]
     live_price = cur_p if (cur_p and bp["sym"] == sym) else bp["entry"]
     if bp["side"] == "BUY":
         un_pnl = round((live_price - bp["entry"]) * bp["qty"], 2)
-    else:  # SHORT
+    else:
         un_pnl = round((bp["entry"] - live_price) * bp["qty"], 2)
 
 pm1, pm2, pm3 = st.columns(3)
@@ -131,9 +131,9 @@ st.divider()
 
 # ---------------- CONTROLS ----------------
 b1, b2, b3 = st.columns((2, 2, 1))
-if b1.button("▶️ START BREAKOUT BOT", type="primary", use_container_width=True):
+if b1.button("▶️ START BOT", type="primary", use_container_width=True):
     ud["bot_on"] = True
-    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 High-Low Breakout Bot Started!")
+    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 Breakout + Current Candle SL Bot Started!")
     st.rerun()
 
 if b2.button("⏹️ STOP BOT", use_container_width=True):
@@ -157,8 +157,8 @@ curr_candle = None
 curr_candle_ts = None
 
 if len(df_ch) >= 2:
-    prev_candle = df_ch.iloc[-2]  # పూర్తిగా క్లోజ్ అయిన మునుపటి క్యాండిల్ (రంగుతో సంబంధం లేదు)
-    curr_candle = df_ch.iloc[-1]  # ప్రస్తుతం నడుస్తున్న క్యాండిల్
+    prev_candle = df_ch.iloc[-2]
+    curr_candle = df_ch.iloc[-1]
     curr_candle_ts = str(df_ch.index[-1])
 
 # ---------------- LIVE CANDLESTICK CHART ----------------
@@ -173,27 +173,27 @@ if not df_ch.empty:
         name=sym
     ))
 
-    # మునుపటి క్యాండిల్ High & Low లెవెల్స్ చార్ట్ మీద చూపించడం (ఏ రంగు అయినా సరే)
+    # పొజిషన్ లేనప్పుడు Trigger లెవెల్స్ చూపించడం
     if prev_candle is not None and ud["bot_pos"] is None:
-        if trade_mode in ["Both (High & Low)", "Only Buy (High Break)"]:
+        if trade_mode in ["Both (High & Low)", "Only Buy (Green)"]:
             fig.add_hline(
                 y=prev_candle["High"],
                 line_dash="dot",
                 line_color="cyan",
-                annotation_text=f"🎯 BUY Trigger (Prev High): ₹{prev_candle['High']:,.2f}",
+                annotation_text=f"🎯 BUY Above: ₹{prev_candle['High']:,.2f}",
                 annotation_position="top left"
             )
-        if trade_mode in ["Both (High & Low)", "Only Short (Low Break)"]:
+        if trade_mode in ["Both (High & Low)", "Only Short (Red)"]:
             fig.add_hline(
                 y=prev_candle["Low"],
                 line_dash="dot",
                 line_color="orange",
-                annotation_text=f"🎯 SHORT Trigger (Prev Low): ₹{prev_candle['Low']:,.2f}",
+                annotation_text=f"🎯 SHORT Below: ₹{prev_candle['Low']:,.2f}",
                 annotation_position="bottom left"
             )
 
-    # ప్రస్తుతం పొజిషన్ ఉంటే Entry లైన్ చూపించడం
-    if isinstance(ud.get("bot_pos"), dict) and ud["bot_pos"]["sym"] == sym:
+    # పొజిషన్ ఉన్నప్పుడు Entry Line మరియు Current Candle SL Line చూపించడం
+    if isinstance(ud.get("bot_pos"), dict) and ud["bot_pos"]["sym"] == sym and curr_candle is not None:
         bp = ud["bot_pos"]
         line_col = "lime" if bp["side"] == "BUY" else "red"
         icon = "🟢" if bp["side"] == "BUY" else "🔴"
@@ -204,9 +204,18 @@ if not df_ch.empty:
             annotation_text=f"{icon} {bp['side']} @ ₹{bp['entry']:,.2f}",
             annotation_position="top left"
         )
+        # Current Candle SL Line
+        live_sl = round(float(curr_candle["Low"]), 2) if bp["side"] == "BUY" else round(float(curr_candle["High"]), 2)
+        fig.add_hline(
+            y=live_sl,
+            line_dash="solid",
+            line_color="yellow",
+            annotation_text=f"🛑 SL (Curr Candle {'Low' if bp['side']=='BUY' else 'High'}): ₹{live_sl:,.2f}",
+            annotation_position="bottom left"
+        )
 
     fig.update_layout(
-        title=f"{sym} - Live 1-Min High/Low Breakout Chart",
+        title=f"{sym} - Live 1-Min Breakout + Candle SL Chart",
         height=380,
         margin=dict(l=10, r=10, t=35, b=10),
         xaxis_rangeslider_visible=False,
@@ -218,57 +227,54 @@ else:
 
 # ---------------- CURRENT POSITION ----------------
 st.subheader("📌 Current Position (ప్రస్తుత పొజిషన్)")
-if isinstance(ud.get("bot_pos"), dict):
+if isinstance(ud.get("bot_pos"), dict) and curr_candle is not None:
     bp = ud["bot_pos"]
     live_price = cur_p if (cur_p and bp["sym"] == sym) else bp["entry"]
     live_pnl = round((live_price - bp["entry"]) * bp["qty"], 2) if bp["side"] == "BUY" else round((bp["entry"] - live_price) * bp["qty"], 2)
     status_lbl = "🟢 LONG (BOUGHT)" if bp["side"] == "BUY" else "🔴 SHORT (SOLD)"
+    cur_sl = round(float(curr_candle["Low"]), 2) if bp["side"] == "BUY" else round(float(curr_candle["High"]), 2)
 
     pos_df = pd.DataFrame([{
         "Position": status_lbl,
         "Asset": bp["sym"],
         "Qty": bp["qty"],
-        "Entry Price (₹)": bp["entry"],
+        "Entry (₹)": bp["entry"],
         "Live Price (₹)": live_price,
+        "Current SL (₹)": cur_sl,
         "Live P&L (₹)": f"{live_pnl:+,.2f}",
         "Entry Time": bp["time"],
-        "Exit Rule": "Current Candle Close"
     }])
     st.dataframe(pos_df, use_container_width=True, hide_index=True)
 else:
-    st.info("⚪ ప్రస్తుతం ఎలాంటి పొజిషన్ లేదు (Waiting for Prev High / Low Breakout...)")
+    st.info("⚪ ప్రస్తుతం ఎలాంటి పొజిషన్ లేదు (Waiting for Breakout + Candle Color...)")
 
-# ---------------- AUTO BREAKOUT EXECUTION LOGIC ----------------
+# ---------------- AUTO EXECUTION LOGIC ----------------
 if ud["bot_on"] and prev_candle is not None and curr_candle is not None:
     ltp = round(float(curr_candle["Close"]), 2)
+    curr_open = round(float(curr_candle["Open"]), 2)
+    curr_high = round(float(curr_candle["High"]), 2)
+    curr_low = round(float(curr_candle["Low"]), 2)
+
     prev_high = round(float(prev_candle["High"]), 2)
     prev_low = round(float(prev_candle["Low"]), 2)
 
+    is_curr_green = ltp > curr_open
+    is_curr_red = ltp < curr_open
+    curr_color_txt = "🟢 GREEN" if is_curr_green else ("🔴 RED" if is_curr_red else "⚪ DOJI")
+
     st.info(
-        f"🔄 **BOT ACTIVE** | Live **{sym}**: **₹{ltp:,.2f}** | "
-        f"🔼 Buy Above: **₹{prev_high:,.2f}** | 🔽 Short Below: **₹{prev_low:,.2f}**"
+        f"🔄 **BOT ACTIVE** | Live **{sym}**: **₹{ltp:,.2f}** ({curr_color_txt}) | "
+        f"🔼 Buy > **₹{prev_high:,.2f}** | 🔽 Short < **₹{prev_low:,.2f}**"
     )
 
-    # 1. EXIT LOGIC (Current Candle Close అవ్వగానే, కొత్త క్యాండిల్ రాగానే Close చేయడం)
+    # 1. EXIT LOGIC (SL Hit లేదా Current Candle Close)
     if isinstance(ud.get("bot_pos"), dict):
         bp = ud["bot_pos"]
-        if curr_candle_ts != bp["entry_candle_ts"]:
-            exit_price = ltp
-            if bp["side"] == "BUY":
-                pnl = round((exit_price - bp["entry"]) * bp["qty"], 2)
-                ud["cash"] = round(ud["cash"] + (exit_price * bp["qty"]), 2)
-            else:  # SHORT COVER
-                pnl = round((bp["entry"] - exit_price) * bp["qty"], 2)
-                ud["cash"] = round(ud["cash"] + (bp["entry"] * bp["qty"]) + pnl, 2)
+        exit_reason = None
 
-            ud["rpnl"] = round(ud["rpnl"] + pnl, 2)
-            ud["hist"].insert(0, {
-                "Side": bp["side"],
-                "Asset": bp["sym"],
-                "Qty": bp["qty"],
-                "Entry (₹)": bp["entry"],
-                "Exit (₹)": exit_price,
-                "P&L (₹)": f"{pnl:+,.2f}",
-                "Entry Time": bp["time"],
-                "Exit Time": now_ist.strftime("%H:%M:%S")
-            })
+        # A. క్యాండిల్ క్లోజ్ అయిందా? (కొత్త క్యాండిల్ రాగానే ఎగ్జిట్)
+        if curr_candle_ts != bp["entry_candle_ts"]:
+            exit_reason = "🏁 CANDLE CLOSE"
+
+        # B. స్టాప్ లాస్ (SL) హిట్ అయిందా? (Current Candle Low/High బ్రేక్ అయితే)
+        elif bp["side"] == "BUY":
