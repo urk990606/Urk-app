@@ -6,7 +6,7 @@ import time, io, wave, struct, math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK 1-Min Binance Live Bot", page_icon="📈", layout="centered")
+st.set_page_config(page_title="URK 1-Min Live Bot", page_icon="📈", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
 # ---------------- AUDIO BEEP GENERATOR ----------------
@@ -47,7 +47,7 @@ if "user" not in st.session_state:
 
 # ---------------- LOGIN SCREEN ----------------
 if not st.session_state.user:
-    st.title("📈 URK 1-Min Binance Live Bot")
+    st.title("📈 URK 1-Min Live Bot")
     u = st.text_input("Username", value="admin")
     p = st.text_input("Password", type="password", value="123")
     if st.button("Login", type="primary"):
@@ -60,54 +60,61 @@ if not st.session_state.user:
 
 ud = st.session_state.db[st.session_state.user]
 
-# ---------------- BINANCE PUBLIC LIVE DATA API ----------------
-@st.cache_data(ttl=300)
-def get_usdtinr():
-    try:
-        # Binance USDT/INR లైవ్ రేటు (లేదా fallback 87.5)
-        r = requests.get("https://binance.vision", timeout=3).json()
-        if "price" in r:
-            return float(r["price"])
-    except Exception:
-        pass
-    return 87.5
-
+# ---------------- LIVE DATA API (BINANCE + COINBASE BACKUP) ----------------
 def get_multiplier(sym):
-    m = get_usdtinr()
+    m = 87.5  # USD to INR rate
     if "BTC" in sym:
-        return m / 1000.0  # ₹1L బడ్జెట్ కోసం స్కేలింగ్
+        return m / 1000.0
     elif "ETH" in sym:
         return m / 100.0
     return m
 
-def get_binance_chart_and_ltp(sym):
+def get_live_chart_and_ltp(sym):
+    coin = sym.split("-")[0]  # "BTC", "ETH", or "SOL"
+    m = get_multiplier(sym)
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    # 1. Try Binance Vision Public API
     try:
-        # "BTC-USD (₹)" -> "BTCUSDT" గా మారుస్తుంది
-        tk = sym.split("-")[0] + "USDT"
-        url = f"https://binance.vision{tk}&interval=1m&limit=60"
-        data = requests.get(url, timeout=4).json()
-        if not isinstance(data, list) or len(data) == 0:
-            return pd.DataFrame(), None
-
-        df = pd.DataFrame(data, columns=[
-            "Open_time", "Open", "High", "Low", "Close", "Volume",
-            "Close_time", "qav", "num_trades", "taker_base_vol", "taker_quote_vol", "ignore"
-        ])
-        df["Open_time"] = pd.to_datetime(df["Open_time"], unit="ms").dt.tz_localize("UTC").dt.tz_convert(IST)
-        df.set_index("Open_time", inplace=True)
-
-        m = get_multiplier(sym)
-        for col in ("Open", "High", "Low", "Close"):
-            df[col] = df[col].astype(float) * m
-
-        ltp = round(float(df["Close"].iloc[-1]), 2)
-        return df, ltp
+        url = f"https://binance.vision{coin}USDT&interval=1m&limit=60"
+        res = requests.get(url, headers=headers, timeout=4)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) > 0:
+                df = pd.DataFrame(data, columns=[
+                    "Open_time", "Open", "High", "Low", "Close", "Volume",
+                    "Close_time", "qav", "num_trades", "taker_base_vol", "taker_quote_vol", "ignore"
+                ])
+                df["Open_time"] = pd.to_datetime(df["Open_time"], unit="ms").dt.tz_localize("UTC").dt.tz_convert(IST)
+                df.set_index("Open_time", inplace=True)
+                for col in ("Open", "High", "Low", "Close"):
+                    df[col] = df[col].astype(float) * m
+                return df, round(float(df["Close"].iloc[-1]), 2), "Binance"
     except Exception:
-        return pd.DataFrame(), None
+        pass
+
+    # 2. Fallback: Coinbase Exchange Public API (Works 100% on US Streamlit Servers)
+    try:
+        cb_url = f"https://coinbase.com{coin}-USD/candles?granularity=60"
+        res = requests.get(cb_url, headers=headers, timeout=4)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list) and len(data) > 0:
+                df = pd.DataFrame(data[:60], columns=["time", "Low", "High", "Open", "Close", "Volume"])
+                df["time"] = pd.to_datetime(df["time"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST)
+                df.set_index("time", inplace=True)
+                df.sort_index(inplace=True)
+                for col in ("Open", "High", "Low", "Close"):
+                    df[col] = df[col].astype(float) * m
+                return df, round(float(df["Close"].iloc[-1]), 2), "Coinbase"
+    except Exception:
+        pass
+
+    return pd.DataFrame(), None, None
 
 # ---------------- TOP BAR & CONTROLS ----------------
 c1, c2 = st.columns((3, 1))
-c1.subheader("📈 Binance Live 1-Min Auto Test")
+c1.subheader("📈 Live 1-Min Auto Test")
 if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
@@ -124,7 +131,7 @@ b1, b2, b3 = st.columns((2, 2, 1))
 if b1.button("▶️ START 1-MIN LOOP", type="primary", use_container_width=True):
     ud["bot_on"] = True
     ud["last_action_ts"] = 0.0
-    ud["bot_logs"].insert(0, f"[{datetime.now(IST).strftime('%H:%M:%S')}] 🚀 Binance Live Loop Started!")
+    ud["bot_logs"].insert(0, f"[{datetime.now(IST).strftime('%H:%M:%S')}] 🚀 Live Loop Started!")
     st.rerun()
 
 if b2.button("⏹️ STOP LOOP", use_container_width=True):
@@ -151,7 +158,7 @@ def live_trading_dashboard():
         ud["sound"] = None
 
     now_ist = datetime.now(IST)
-    df_ch, ltp = get_binance_chart_and_ltp(sym)
+    df_ch, ltp, source = get_live_chart_and_ltp(sym)
 
     # P&L Calculation
     un_pnl = 0.0
@@ -187,7 +194,7 @@ def live_trading_dashboard():
                 annotation_position="top left"
             )
         fig.update_layout(
-            title=f"{sym} - Binance Live 1-Min Chart (LTP: ₹{ltp:,.2f})",
+            title=f"{sym} - {source} Live 1-Min Chart (LTP: ₹{ltp:,.2f})",
             height=380,
             margin=dict(l=10, r=10, t=35, b=10),
             xaxis_rangeslider_visible=False,
@@ -195,7 +202,7 @@ def live_trading_dashboard():
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("Binance లైవ్ డేటా లోడ్ అవుతోంది... దయచేసి వేచి ఉండండి.")
+        st.warning("లైవ్ డేటా లోడ్ అవుతోంది... దయచేసి వేచి ఉండండి.")
 
     # Auto Execution Logic
     if ud["bot_on"] and ltp is not None:
@@ -257,19 +264,3 @@ def live_trading_dashboard():
             "Live Price (₹)": cur_p,
             "Live P&L (₹)": f"{live_pnl:+,.2f}",
             "Buy Time": bp["time"]
-        }])
-        st.dataframe(pos_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("⚪ ప్రస్తుతం ఎలాంటి పొజిషన్ లేదు (Waiting for Next BUY)")
-
-    # History & Logs
-    if ud["hist"]:
-        st.subheader("📋 Completed Orders (1-Min Buy/Sell History)")
-        st.dataframe(pd.DataFrame(ud["hist"]), use_container_width=True, hide_index=True)
-
-    if ud["bot_logs"]:
-        st.subheader("📜 Live Execution Logs")
-        for log in ud["bot_logs"][:15]:
-            st.text(log)
-
-live_trading_dashboard()
