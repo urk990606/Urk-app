@@ -58,29 +58,43 @@ if not st.session_state.user:
 ud = st.session_state.db[st.session_state.user]
 
 def get_live_ltp(sym):
-    # CoinGecko & Coinbase Simple Ticker (No Brackets Used)
-    cg_map = {"BTC-USD (₹)": "bitcoin", "ETH-USD (₹)": "ethereum", "SOL-USD (₹)": "solana"}
-    cb_map = {"BTC-USD (₹)": "BTC-USD", "ETH-USD (₹)": "ETH-USD", "SOL-USD (₹)": "SOL-USD"}
     div_map = {"BTC-USD (₹)": 1000.0, "ETH-USD (₹)": 100.0, "SOL-USD (₹)": 1.0}
-
     m = 87.5 / div_map.get(sym, 1.0)
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # 1. Coinbase Ticker
+    coin = "BTC"
+    if "ETH" in sym:
+        coin = "ETH"
+    elif "SOL" in sym:
+        coin = "SOL"
+
+    # 1. CryptoCompare Public API (Super fast on Streamlit Cloud)
     try:
-        pair = cb_map.get(sym, "BTC-USD")
-        r = requests.get(f"https://coinbase.com{pair}/spot", headers=headers, timeout=4).json()
-        price = float(r.get("data", {}).get("amount", 0))
+        r = requests.get(f"https://cryptocompare.com{coin}&tsyms=USD", headers=headers, timeout=4).json()
+        price = float(r.get("USD", 0))
         if price > 0:
             return round(price * m, 2)
     except Exception:
         pass
 
-    # 2. CoinGecko Ticker (Backup)
+    # 2. Kraken Public API (Backup 1)
     try:
-        cid = cg_map.get(sym, "bitcoin")
-        r = requests.get(f"https://coingecko.com{cid}&vs_currencies=usd", headers=headers, timeout=4).json()
-        price = float(r.get(cid, {}).get("usd", 0))
+        kr_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
+        r = requests.get(f"https://kraken.com{kr_pair}", headers=headers, timeout=4).json()
+        res = r.get("result", {})
+        for v in res.values():
+            c_val = v.get("c")
+            if c_val:
+                price = float(next(iter(c_val)))
+                if price > 0:
+                    return round(price * m, 2)
+    except Exception:
+        pass
+
+    # 3. Coinbase Public API (Backup 2)
+    try:
+        r = requests.get(f"https://coinbase.com{coin}-USD/spot", headers=headers, timeout=4).json()
+        price = float(r.get("data", {}).get("amount", 0))
         if price > 0:
             return round(price * m, 2)
     except Exception:
@@ -179,7 +193,7 @@ def live_bot_engine():
     if ltp is not None:
         st.caption(f"🟢 Live Scaled Price ({sym}): **₹{ltp:,.2f}** | Time: {now_ist.strftime('%H:%M:%S')} IST")
     else:
-        st.warning("Fetching live price...")
+        st.warning("Fetching live price... Please wait 3 seconds.")
 
     if ud["bot_on"] and ltp is not None:
         now_ts = time.time()
