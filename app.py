@@ -60,7 +60,6 @@ ud = st.session_state.db[st.session_state.user]
 def get_live_ltp(sym):
     div_map = {"BTC-USD (₹)": 1000.0, "ETH-USD (₹)": 100.0, "SOL-USD (₹)": 1.0}
     m = 87.5 / div_map.get(sym, 1.0)
-    headers = {"User-Agent": "Mozilla/5.0"}
 
     coin = "BTC"
     if "ETH" in sym:
@@ -68,39 +67,38 @@ def get_live_ltp(sym):
     elif "SOL" in sym:
         coin = "SOL"
 
-    # 1. CryptoCompare Public API (Super fast on Streamlit Cloud)
+    # 1. KuCoin Public Ticker (Never blocks cloud IPs)
     try:
-        r = requests.get(f"https://cryptocompare.com{coin}&tsyms=USD", headers=headers, timeout=4).json()
-        price = float(r.get("USD", 0))
+        r = requests.get(f"https://kucoin.com{coin}-USDT", timeout=5).json()
+        price = float(r.get("data", {}).get("price", 0))
         if price > 0:
-            return round(price * m, 2)
+            return round(price * m, 2), "KuCoin"
     except Exception:
         pass
 
-    # 2. Kraken Public API (Backup 1)
+    # 2. Bitstamp Public Ticker (Super reliable)
     try:
-        kr_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
-        r = requests.get(f"https://kraken.com{kr_pair}", headers=headers, timeout=4).json()
-        res = r.get("result", {})
-        for v in res.values():
-            c_val = v.get("c")
-            if c_val:
-                price = float(next(iter(c_val)))
-                if price > 0:
-                    return round(price * m, 2)
-    except Exception:
-        pass
-
-    # 3. Coinbase Public API (Backup 2)
-    try:
-        r = requests.get(f"https://coinbase.com{coin}-USD/spot", headers=headers, timeout=4).json()
-        price = float(r.get("data", {}).get("amount", 0))
+        pair = f"{coin.lower()}usd"
+        r = requests.get(f"https://bitstamp.net{pair}/", timeout=5).json()
+        price = float(r.get("last", 0))
         if price > 0:
-            return round(price * m, 2)
+            return round(price * m, 2), "Bitstamp"
     except Exception:
         pass
 
-    return None
+    # 3. OKX Public Ticker
+    try:
+        r = requests.get(f"https://okx.com{coin}-USDT", timeout=5).json()
+        data = r.get("data")
+        if data:
+            first = next(iter(data))
+            price = float(first.get("last", 0))
+            if price > 0:
+                return round(price * m, 2), "OKX"
+    except Exception:
+        pass
+
+    return None, None
 
 c1, c2 = st.columns((3, 1))
 c1.subheader("📈 Live 1-Min Auto Test")
@@ -137,12 +135,12 @@ if b3.button("🔄 Reset", use_container_width=True):
     ud["rpnl"] = 0.0
     st.rerun()
 
-# ---------------- 100% REAL-TIME TRADINGVIEW CHART ----------------
-tv_sym = "BINANCE:BTCUSDT"
+# ---------------- TRADINGVIEW LIVE CHART ----------------
+tv_sym = "COINBASE:BTCUSD"
 if "ETH" in sym:
-    tv_sym = "BINANCE:ETHUSDT"
+    tv_sym = "COINBASE:ETHUSD"
 elif "SOL" in sym:
-    tv_sym = "BINANCE:SOLUSDT"
+    tv_sym = "COINBASE:SOLUSD"
 
 tv_html = f"""
 <div class="tradingview-widget-container">
@@ -157,10 +155,7 @@ tv_html = f"""
     "theme": "dark",
     "style": "1",
     "locale": "en",
-    "toolbar_bg": "#f1f3f6",
     "enable_publishing": false,
-    "hide_top_toolbar": false,
-    "save_image": false,
     "container_id": "tv_chart"
   }});
   </script>
@@ -168,7 +163,7 @@ tv_html = f"""
 """
 components.html(tv_html, height=390)
 
-# ---------------- LIVE BOT ENGINE (EVERY 3 SECONDS) ----------------
+# ---------------- LIVE BOT ENGINE ----------------
 @st.fragment(run_every=3)
 def live_bot_engine():
     if ud.get("sound"):
@@ -176,7 +171,7 @@ def live_bot_engine():
         ud["sound"] = None
 
     now_ist = datetime.now(IST)
-    ltp = get_live_ltp(sym)
+    ltp, src = get_live_ltp(sym)
 
     un_pnl = 0.0
     if isinstance(ud.get("bot_pos"), dict):
@@ -191,9 +186,9 @@ def live_bot_engine():
     m3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
 
     if ltp is not None:
-        st.caption(f"🟢 Live Scaled Price ({sym}): **₹{ltp:,.2f}** | Time: {now_ist.strftime('%H:%M:%S')} IST")
+        st.success(f"🟢 Live Scaled Price ({sym} via {src}): **₹{ltp:,.2f}** | {now_ist.strftime('%H:%M:%S')} IST")
     else:
-        st.warning("Fetching live price... Please wait 3 seconds.")
+        st.warning("Fetching live price...")
 
     if ud["bot_on"] and ltp is not None:
         now_ts = time.time()
