@@ -7,10 +7,10 @@ import time
 import html
 
 # ============================================================
-# EMA 9/21 PAPER TRADING APP - Binance public BTCUSDT data
+# EMA 3/8 LONG/SHORT PAPER TRADING APP - Binance public BTCUSDT data
 # Paper trading only. No broker orders are placed.
 # ===============================================================
-st.set_page_config(page_title="EMA 9/21 Paper Trader", layout="wide")
+st.set_page_config(page_title="EMA 3/8 Long Short Paper Trader", layout="wide")
 
 BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
 SYMBOL = "BTCUSDT"
@@ -68,9 +68,9 @@ with st.sidebar:
     qty_btc = st.number_input("Paper quantity (BTC)", min_value=0.0001, max_value=1.0,
                               value=0.001, step=0.0001, format="%.4f")
     refresh_seconds = st.slider("Refresh interval (seconds)", 2, 15, 3)
-    st.caption("BUY: EMA3 crosses above EMA8 on a completed candle.")
-    st.caption("Entry: crossover candle close • SL: previous candle low.")
-    st.caption("TSL: previous completed candle low; it only moves upward.")
+    st.caption("BUY: EMA3 crosses above EMA8 • SELL/SHORT: EMA3 crosses below EMA8 (completed candles).")
+    st.caption("Long SL: previous candle low • Short SL: previous candle high.")
+    st.caption("Long TSL: previous candle low (up only) • Short TSL: previous candle high (down only).")
 
 if st.session_state.bot_running and selected_interval != st.session_state.active_interval:
     st.warning("Bot running లో timeframe మార్చలేరు. ముందుగా Stop Bot నొక్కండి.")
@@ -157,13 +157,24 @@ def close_position(exit_price: float, reason: str):
     pos = st.session_state.position
     if not isinstance(pos, dict):
         return
+
     entry = float(pos.get("entry", exit_price))
     qty = float(pos.get("qty", qty_btc))
-    pnl = (float(exit_price) - entry) * qty
-    st.session_state.cash_usdt += float(exit_price) * qty
+    side = pos.get("side", "BUY")
+
+    if side == "SHORT":
+        pnl = (entry - float(exit_price)) * qty
+        # Entry notional was reserved on opening; return it plus short P&L.
+        st.session_state.cash_usdt += (entry * qty) + pnl
+        log_side = "BUY TO COVER"
+    else:
+        pnl = (float(exit_price) - entry) * qty
+        st.session_state.cash_usdt += float(exit_price) * qty
+        log_side = "SELL"
+
     st.session_state.trade_log.insert(0, {
         "Time (UTC)": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-        "Side": "SELL",
+        "Side": log_side,
         "Reason": reason,
         "Entry": entry,
         "Exit": float(exit_price),
@@ -171,76 +182,123 @@ def close_position(exit_price: float, reason: str):
         "P&L USDT": pnl,
     })
     st.session_state.position = None
-    st.session_state.last_exit_message = f"{reason} | P&L: {pnl:.4f} USDT"
-    st.session_state.sound_event = "target" if reason == "TARGET" else "stop" if reason in ("SL", "TSL") else "exit"
+    st.session_state.last_exit_message = f"{side} {reason} | P&L: {pnl:+.4f} USDT"
+    st.session_state.sound_event = (
+        "target" if reason == "TARGET"
+        else "stop" if reason in ("SL", "TSL")
+        else "exit"
+    )
+
 
 def process_strategy():
-    # Use the latest fully closed candle to detect a fresh EMA crossover.
-    global closed, live
-    pos = st.session_state.position
+    # Signals are evaluated only after a candle has fully closed.
     latest_closed = closed.iloc[-1]
     previous_closed = closed.iloc[-2]
     candle_key = str(latest_closed["open_time"])
+    pos = st.session_state.position
 
     if isinstance(pos, dict):
-        # Update trailing stop once per newly completed candle.
+        side = pos.get("side", "BUY")
+
+        # Trail once per newly completed candle:
+        # Long stop can only rise; short stop can only fall.
         if st.session_state.last_trail_candle != candle_key:
             old_stop = float(pos.get("stop", pos.get("initial_sl", 0)))
-            candidate = float(latest_closed["low"])
-            new_stop = max(old_stop, candidate)
+            if side == "SHORT":
+                candidate = float(latest_closed["high"])
+                new_stop = min(old_stop, candidate)
+            else:
+                candidate = float(latest_closed["low"])
+                new_stop = max(old_stop, candidate)
+
             pos["stop"] = new_stop
             st.session_state.position = pos
             st.session_state.last_trail_candle = candle_key
 
-        # Check current live candle against stop/target.
-        # If both levels trade within the same candle, assume stop first (conservative).
         stop_price = float(pos.get("stop", pos.get("initial_sl", 0)))
         target_price = float(pos.get("target", 0))
         live_low = float(live["low"])
         live_high = float(live["high"])
-        if live_low <= stop_price:
-            close_position(stop_price, "TSL" if stop_price > float(pos.get("initial_sl", stop_price)) else "SL")
-        elif live_high >= target_price:
-            close_position(target_price, "TARGET")
+        initial_sl = float(pos.get("initial_sl", stop_price))
+
+        # If stop and target both trade in the same candle, assume stop first.
+        if side == "SHORT":
+            if live_high >= stop_price:
+                close_position(stop_price, "TSL" if stop_price < initial_sl else "SL")
+            elif live_low <= target_price:
+                close_position(target_price, "TARGET")
+        else:
+            if live_low <= stop_price:
+                close_position(stop_price, "TSL" if stop_price > initial_sl else "SL")
+            elif live_high >= target_price:
+                close_position(target_price, "TARGET")
         return
 
-    # No open position: only one evaluation per closed candle.
-    if st.session_state.bot_running and st.session_state.last_signal_candle != candle_key:
-        st.session_state.last_signal_candle = candle_key
-        crossed_up = (
-            float(previous_closed["ema9"]) <= float(previous_closed["ema21"])
-            and float(latest_closed["ema9"]) > float(latest_closed["ema21"])
-        )
-        # Entry only when the completed crossover candle closes above both EMAs.
-        if crossed_up and float(latest_closed["close"]) > float(latest_closed["ema9"]) and float(latest_closed["close"]) > float(latest_closed["ema21"]):
-            entry = float(latest_closed["close"])
-            initial_sl = float(previous_closed["low"])
-            risk = entry - initial_sl
-            if risk > 0:
-                target = entry + (risk * rr_value)
-                cost = entry * float(qty_btc)
-                if cost <= st.session_state.cash_usdt:
-                    st.session_state.cash_usdt -= cost
-                    st.session_state.position = {
-                        "side": "BUY",
-                        "entry": entry,
-                        "stop": initial_sl,
-                        "initial_sl": initial_sl,
-                        "target": target,
-                        "qty": float(qty_btc),
-                        "entry_time": str(latest_closed["open_time"]),
-                    }
-                    st.session_state.last_trail_candle = None
-                    st.session_state.trade_log.insert(0, {
-                        "Time (UTC)": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
-                        "Side": "BUY",
-                        "Reason": "EMA 3/8 CROSSOVER",
-                        "Entry": entry,
-                        "Exit": None,
-                        "Qty BTC": float(qty_btc),
-                        "P&L USDT": None,
-                    })
-                    st.session_state.sound_event = "buy"
+    # Avoid entering immediately on an old signal when the bot is started.
+    if not st.session_state.bot_running or st.session_state.last_signal_candle == candle_key:
+        return
+
+    st.session_state.last_signal_candle = candle_key
+
+    ema3_prev = float(previous_closed["ema9"])
+    ema8_prev = float(previous_closed["ema21"])
+    ema3_now = float(latest_closed["ema9"])
+    ema8_now = float(latest_closed["ema21"])
+    close_now = float(latest_closed["close"])
+    previous_low = float(previous_closed["low"])
+    previous_high = float(previous_closed["high"])
+
+    crossed_up = ema3_prev <= ema8_prev and ema3_now > ema8_now
+    crossed_down = ema3_prev >= ema8_prev and ema3_now < ema8_now
+
+    # LONG: EMA3 crosses above EMA8; crossover candle closes above both.
+    if crossed_up and close_now > ema3_now and close_now > ema8_now:
+        side = "BUY"
+        entry = close_now
+        initial_sl = previous_low
+        risk = entry - initial_sl
+        target = entry + (risk * rr_value)
+
+    # SHORT: EMA3 crosses below EMA8; crossover candle closes below both.
+    elif crossed_down and close_now < ema3_now and close_now < ema8_now:
+        side = "SHORT"
+        entry = close_now
+        initial_sl = previous_high
+        risk = initial_sl - entry
+        target = entry - (risk * rr_value)
+    else:
+        return
+
+    if risk <= 0:
+        return
+
+    cost = entry * float(qty_btc)
+    if cost > st.session_state.cash_usdt:
+        st.warning("Paper account cash సరిపోవడం లేదు; entry తీసుకోలేదు.")
+        return
+
+    # Reserve entry notional for either simulated long or short position.
+    st.session_state.cash_usdt -= cost
+    st.session_state.position = {
+        "side": side,
+        "entry": entry,
+        "stop": initial_sl,
+        "initial_sl": initial_sl,
+        "target": target,
+        "qty": float(qty_btc),
+        "entry_time": str(latest_closed["open_time"]),
+    }
+    st.session_state.last_trail_candle = None
+    st.session_state.trade_log.insert(0, {
+        "Time (UTC)": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+        "Side": side,
+        "Reason": "EMA 3/8 CROSSOVER",
+        "Entry": entry,
+        "Exit": None,
+        "Qty BTC": float(qty_btc),
+        "P&L USDT": None,
+    })
+    st.session_state.sound_event = "buy"
 
 # ---- Controls ----
 left, middle, right = st.columns(3)
@@ -280,8 +338,8 @@ current_price = float(live["close"])
 position = st.session_state.position
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("BTCUSDT Price", f"${current_price:,.2f}")
-m2.metric("EMA 9", f"{float(live['ema9']):,.2f}")
-m3.metric("EMA 21", f"{float(live['ema21']):,.2f}")
+m2.metric("EMA 3", f"{float(live['ema9']):,.2f}")
+m3.metric("EMA 8", f"{float(live['ema21']):,.2f}")
 m4.metric("Bot Status", "RUNNING" if st.session_state.bot_running else "STOPPED")
 
 if st.session_state.last_exit_message:
@@ -292,15 +350,15 @@ if isinstance(position, dict):
     stop = position.get("stop")
     target = position.get("target")
     qty = float(position.get("qty", qty_btc))
-    unrealized = (current_price - entry) * qty
+    unrealized = ((entry - current_price) if position.get("side") == "SHORT" else (current_price - entry)) * qty
     a, b, c, d = st.columns(4)
-    a.metric("Position", "BUY")
+    a.metric("Position", str(position.get("side", "BUY")))
     b.metric("Entry", f"${entry:,.2f}")
     c.metric("SL / TSL", f"${float(stop):,.2f}" if stop is not None else "—")
     d.metric("Target", f"${float(target):,.2f}" if target is not None else "—")
     st.metric("Unrealized P&L", f"{unrealized:+.4f} USDT")
 else:
-    st.info("Open position లేదు. Bot RUNNING అయితే EMA crossover కోసం వేచి ఉంటుంది.")
+    st.info("Open position లేదు. Bot RUNNING అయితే EMA 3/8 bullish లేదా bearish crossover కోసం వేచి ఉంటుంది.")
 
 # ---- Chart ----
 plot_df = df.tail(150).copy()
