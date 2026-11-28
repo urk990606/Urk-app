@@ -72,17 +72,19 @@ def get_chart_and_ema(sym, tf):
         tk = "CL=F" if is_crude else (sym.replace(" (₹)", "") if is_crypto else sym)
         m = get_usdinr() if (is_crude or is_crypto) else 1.0
         if "BTC-USD" in sym:
-            m /= 1000.0
+            m = m / 1000.0
         elif "ETH-USD" in sym:
-            m /= 100.0
+            m = m / 100.0
 
         df = yf.Ticker(tk).history(period="1d" if is_crypto else "5d", interval="1m")
         if not df.empty:
             if is_crude or is_crypto:
                 for col in ("Open", "High", "Low", "Close"):
                     df[col] = df[col] * m
-            if tf in ("3m", "5m"):
-                df = df.resample(f"{tf[0]}min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
+            if tf == "3m":
+                df = df.resample("3min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
+            elif tf == "5m":
+                df = df.resample("5min").agg({"Open": "first", "High": "max", "Low": "min", "Close": "last"}).dropna()
             if len(df) >= 12:
                 df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
                 return df.tail(60).copy()
@@ -113,7 +115,10 @@ ignore_mkt_hrs = sc3.checkbox("24/7 Test Mode", value=True)
 df_live = get_chart_and_ema(sym, tf)
 ltp = round(float(df_live["Close"].iloc[-1]), 2) if not df_live.empty else None
 
-un_pnl = round((ltp - ud["bot_pos"]["entry"]) * ud["bot_pos"]["qty"], 2) if (isinstance(ud.get("bot_pos"), dict) and ltp) else 0.0
+un_pnl = 0.0
+if isinstance(ud.get("bot_pos"), dict) and ltp is not None:
+    un_pnl = round((ltp - ud["bot_pos"]["entry"]) * ud["bot_pos"]["qty"], 2)
+
 pm1, pm2, pm3 = st.columns(3)
 pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
 pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
@@ -131,7 +136,13 @@ if b2.button("⏹️ STOP BOT", use_container_width=True):
     ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🛑 Bot Stopped.")
     st.rerun()
 if b3.button("🔄 Reset", use_container_width=True):
-    ud.update({"bot_on": False, "bot_pos": None, "hist": [], "bot_logs": [], "traded_candles": [], "cash": 100000.0, "rpnl": 0.0})
+    ud["bot_on"] = False
+    ud["bot_pos"] = None
+    ud["hist"] = []
+    ud["bot_logs"] = []
+    ud["traded_candles"] = []
+    ud["cash"] = 100000.0
+    ud["rpnl"] = 0.0
     st.rerun()
 
 if not df_live.empty:
@@ -189,8 +200,10 @@ if ud["bot_on"] and not df_live.empty:
     if in_mkt:
         cc = df_live.iloc[-1]
         cid = f"{tf}_{str(df_live.index[-1])}"
-        co, ccl, cema = float(cc["Open"]), float(cc["Close"]), float(cc["EMA9"])
-        tf_m = int(tf[0])
+        co = float(cc["Open"])
+        ccl = float(cc["Close"])
+        cema = float(cc["EMA9"])
+        tf_m = int(tf.replace("m", ""))
         rem_s = (tf_m * 60) - ((now_ist.minute % tf_m) * 60 + now_ist.second)
         st.info(f"🔄 **SCANNING ({tf})** | LTP: **₹{ccl:,.2f}** | 9 EMA: **₹{cema:,.2f}** | **{'🟢 GREEN' if ccl >= co else '🔴 RED'}** | Closes in: **{rem_s}s**")
 
@@ -205,6 +218,7 @@ if ud["bot_on"] and not df_live.empty:
                     ud["sound"] = "buy"
                     ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🟢 BUY: {qty} {sym} @ ₹{ep:,.2f}")
                     st.rerun()
+
         elif isinstance(ud["bot_pos"], dict):
             bp = ud["bot_pos"]
             cp = round(ccl, 2)
@@ -212,8 +226,3 @@ if ud["bot_on"] and not df_live.empty:
                 bp["high"] = cp
                 nsl = round(bp["high"] - trail_gap_pts, 2)
                 if cp > (bp["entry"] + trail_gap_pts) and nsl <= bp["entry"]:
-                    nsl = round(bp["entry"] + 0.50, 2)
-                if nsl > bp["sl"]:
-                    bp["sl"] = nsl
-            reason = None
-            if cp <= bp["sl"]:
