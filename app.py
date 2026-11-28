@@ -1,11 +1,12 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import plotly.graph_objects as go
 import time, io, wave, struct, math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK 1-Min Auto Test Bot", page_icon="⏱️", layout="centered")
+st.set_page_config(page_title="URK 1-Min Auto Test + Chart", page_icon="📈", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
 # ---------------- AUDIO BEEP GENERATOR ----------------
@@ -46,7 +47,7 @@ if "user" not in st.session_state:
 
 # ---------------- LOGIN SCREEN ----------------
 if not st.session_state.user:
-    st.title("⏱️ URK 1-Min Test Bot Login")
+    st.title("📈 URK 1-Min Test Bot Login")
     u = st.text_input("Username", value="admin")
     p = st.text_input("Password", type="password", value="123")
     if st.button("Login", type="primary"):
@@ -62,7 +63,7 @@ if ud.get("sound"):
     trigger_beep(ud["sound"])
     ud["sound"] = None
 
-# ---------------- 24/7 LIVE PRICE FETCHING ----------------
+# ---------------- 24/7 LIVE PRICE & CHART DATA ----------------
 @st.cache_data(ttl=60)
 def get_usdinr():
     try:
@@ -79,9 +80,9 @@ def get_ltp(sym):
         tk = sym.replace(" (₹)", "")
         m = get_usdinr()
         if "BTC-USD" in sym:
-            m = m / 1000.0  # మినీ యూనిట్ (~₹7,500)
+            m = m / 1000.0
         elif "ETH-USD" in sym:
-            m = m / 100.0   # మినీ యూనిట్ (~₹2,500)
+            m = m / 100.0
 
         df = yf.Ticker(tk).history(period="1d", interval="1m")
         if not df.empty:
@@ -90,9 +91,29 @@ def get_ltp(sym):
         pass
     return None
 
+@st.cache_data(ttl=5)
+def get_chart_data(sym):
+    try:
+        tk = sym.replace(" (₹)", "")
+        m = get_usdinr()
+        if "BTC-USD" in sym:
+            m = m / 1000.0
+        elif "ETH-USD" in sym:
+            m = m / 100.0
+
+        df = yf.Ticker(tk).history(period="1d", interval="1m")
+        if not df.empty:
+            df = df.tail(60).copy()  # చివరి 60 నిమిషాల క్యాండిల్స్
+            for col in ("Open", "High", "Low", "Close"):
+                df[col] = df[col] * m
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
 # ---------------- HEADER & P&L ----------------
 c1, c2 = st.columns((3, 1))
-c1.subheader(f"⏱️ 1-Min Auto Test | Cash: ₹{ud['cash']:,.2f}")
+c1.subheader(f"📈 1-Min Auto Test | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
     st.session_state.user = None
     st.rerun()
@@ -109,7 +130,7 @@ pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
 pm3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
 st.divider()
 
-# ---------------- MAIN 1-MIN BUY / SELL ENGINE ----------------
+# ---------------- CONTROLS ----------------
 now_ist = datetime.now(IST)
 cryptos = ["BTC-USD (₹)", "ETH-USD (₹)", "SOL-USD (₹)"]
 
@@ -121,7 +142,7 @@ interval_sec = col3.number_input("Cycle Time (Sec):", 10, 300, 60)
 b1, b2, b3 = st.columns((2, 2, 1))
 if b1.button("▶️ START 1-MIN LOOP", type="primary", use_container_width=True):
     ud["bot_on"] = True
-    ud["last_action_ts"] = 0.0  # నొక్కగానే వెంటనే మొదటి BUY జరిగేలా
+    ud["last_action_ts"] = 0.0
     ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 1-Min Auto Loop Started!")
     st.rerun()
 
@@ -139,6 +160,57 @@ if b3.button("🔄 Reset", use_container_width=True):
     ud["rpnl"] = 0.0
     st.rerun()
 
+# ---------------- LIVE CANDLESTICK CHART ----------------
+df_ch = get_chart_data(sym)
+if not df_ch.empty:
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(
+        x=df_ch.index,
+        open=df_ch["Open"],
+        high=df_ch["High"],
+        low=df_ch["Low"],
+        close=df_ch["Close"],
+        name=sym
+    ))
+    # ఒకవేళ ప్రస్తుతం BOUGHT పొజిషన్ ఉంటే, చార్ట్ మీద కొన్న ధర దగ్గర గ్రీన్ లైన్ చూపించడం
+    if isinstance(ud.get("bot_pos"), dict) and ud["bot_pos"]["sym"] == sym:
+        fig.add_hline(
+            y=ud["bot_pos"]["entry"],
+            line_dash="dash",
+            line_color="lime",
+            annotation_text=f"🟢 BOUGHT @ ₹{ud['bot_pos']['entry']:,.2f}",
+            annotation_position="top left"
+        )
+    fig.update_layout(
+        title=f"{sym} - Live 1-Min Chart",
+        height=380,
+        margin=dict(l=10, r=10, t=35, b=10),
+        xaxis_rangeslider_visible=False,
+        template="plotly_dark"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.warning("చార్ట్ డేటా లోడ్ అవుతోంది... దయచేసి వేచి ఉండండి.")
+
+# ---------------- CURRENT POSITION ('BOUGHT' STATUS) ----------------
+st.subheader("📌 Current Position (ప్రస్తుత పొజిషన్)")
+if isinstance(ud.get("bot_pos"), dict):
+    bp = ud["bot_pos"]
+    cur_p = get_ltp(bp["sym"]) or bp["entry"]
+    live_pnl = round((cur_p - bp["entry"]) * bp["qty"], 2)
+    pos_df = pd.DataFrame([{
+        "Status": "🟢 BOUGHT (HOLDING)",
+        "Asset": bp["sym"],
+        "Qty": bp["qty"],
+        "Buy Price (₹)": bp["entry"],
+        "Live Price (₹)": cur_p,
+        "Live P&L (₹)": f"{live_pnl:+,.2f}",
+        "Buy Time": bp["time"]
+    }])
+    st.dataframe(pos_df, use_container_width=True, hide_index=True)
+else:
+    st.info("⚪ ప్రస్తుతం ఎలాంటి పొజిషన్ లేదు (Waiting for Next BUY)")
+
 # ---------------- AUTO EXECUTION LOGIC ----------------
 if ud["bot_on"]:
     ltp = get_ltp(sym)
@@ -147,9 +219,9 @@ if ud["bot_on"]:
     remaining = max(0, int(interval_sec - elapsed))
 
     if ltp is not None:
-        st.info(f"🔄 **RUNNING** | Live **{sym}**: **₹{ltp:,.2f}** | Next Action in: **{remaining}s**")
+        st.info(f"🔄 **BOT RUNNING** | Live **{sym}**: **₹{ltp:,.2f}** | Next Action in: **{remaining}s**")
 
-        # 1. పొజిషన్ లేకపోతే -> 1 నిమిషం అవ్వగానే BUY చేయాలి
+        # 1. BUY ACTION
         if ud["bot_pos"] is None and elapsed >= interval_sec:
             cost = round(ltp * qty, 2)
             if ud["cash"] >= cost:
@@ -167,7 +239,7 @@ if ud["bot_on"]:
             else:
                 st.error("Insufficient Cash!")
 
-        # 2. పొజిషన్ ఉంటే -> సరిగ్గా 1 నిమిషం తర్వాత SELL చేయాలి
+        # 2. SELL ACTION (1 నిమిషం తర్వాత)
         elif isinstance(ud["bot_pos"], dict) and elapsed >= interval_sec:
             bp = ud["bot_pos"]
             pnl = round((ltp - bp["entry"]) * bp["qty"], 2)
@@ -191,16 +263,10 @@ if ud["bot_on"]:
     time.sleep(2)
     st.rerun()
 
-# ---------------- ACTIVE POSITION & TABLES ----------------
-if isinstance(ud.get("bot_pos"), dict):
-    bp = ud["bot_pos"]
-    cur_p = get_ltp(bp["sym"]) or bp["entry"]
-    live_pnl = round((cur_p - bp["entry"]) * bp["qty"], 2)
-    st.success(f"📌 **Holding Position:** {bp['qty']} {bp['sym']} | Bought @ ₹{bp['entry']:,.2f} | Live: ₹{cur_p:,.2f} | Live P&L: **₹{live_pnl:+,.2f}**")
-
+# ---------------- HISTORY & LOGS ----------------
 if ud["hist"]:
     st.subheader("📋 Completed Orders (1-Min Buy/Sell History)")
-    st.dataframe(pd.DataFrame(ud["hist"]), use_container_width=True)
+    st.dataframe(pd.DataFrame(ud["hist"]), use_container_width=True, hide_index=True)
 
 if ud["bot_logs"]:
     st.subheader("📜 Live Execution Logs")
