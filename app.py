@@ -12,7 +12,7 @@ import html
 # ===============================================================
 st.set_page_config(page_title="EMA 9/21 Paper Trader", layout="wide")
 
-BINANCE_URL = "https://api.binance.com/api/v3/klines"
+BINANCE_URL = "https://data-api.binance.vision/api/v3/klines"
 SYMBOL = "BTCUSDT"
 TIMEFRAMES = {"1 minute": "1m", "3 minutes": "3m", "5 minutes": "5m", "15 minutes": "15m"}
 
