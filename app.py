@@ -1,238 +1,349 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import requests
-import time, io, wave, struct, math
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-st.set_page_config(page_title="URK Paper Trading", page_icon="📈", layout="centered")
+# ============================================================
+# URK EMA PAPER TRADING - Binance BTCUSDT, 1-minute candles
+# Strategy:
+#   BUY  when 9 EMA crosses above 21 EMA on a CLOSED candle.
+#   Entry = crossover candle close.
+#   SL    = low of the candle immediately before crossover.
+#   EXIT  when a later candle trades at/below the SL.
+# Paper trading only. No broker orders are placed.
+# ============================================================
+
+st.set_page_config(page_title="URK EMA Paper Trading", page_icon="📈", layout="wide")
 IST = ZoneInfo("Asia/Kolkata")
+BINANCE_URLS = [
+    "https://data-api.binance.vision/api/v3/klines",
+    "https://api.binance.com/api/v3/klines",
+]
+PAIR = "BTCUSDT"
+INTERVAL = "1m"
+STARTING_CASH = 100000.0
 
-@st.cache_data
-def make_wav(freq=950, dur=0.35):
-    rate = 22050
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(rate)
-        frames = bytearray()
-        for i in range(int(rate * dur)):
-            frames.extend(struct.pack("<h", int(28000 * math.sin(2 * math.pi * freq * i / rate))))
-        wf.writeframes(bytes(frames))
-    return buf.getvalue()
 
-def trigger_beep(kind="buy"):
-    st.audio(make_wav(1000, 0.35) if kind == "buy" else make_wav(550, 0.5), format="audio/wav", autoplay=True)
+@st.cache_data(ttl=1, show_spinner=False)
+def fetch_candles():
+    last_error = None
+    for url in BINANCE_URLS:
+        try:
+            response = requests.get(
+                url,
+                params={"symbol": PAIR, "interval": INTERVAL, "limit": 150},
+                timeout=8,
+                headers={"User-Agent": "Mozilla/5.0"},
+            )
+            response.raise_for_status()
+            rows = response.json()
+            columns = [
+                "OpenTime", "Open", "High", "Low", "Close", "Volume",
+                "CloseTime", "QuoteVolume", "Trades", "TakerBuyBase",
+                "TakerBuyQuote", "Ignore",
+            ]
+            df = pd.DataFrame(rows, columns=columns)
+            df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms", utc=True)
+            df["CloseTime"] = pd.to_datetime(df["CloseTime"], unit="ms", utc=True)
+            df.set_index("OpenTime", inplace=True)
+            for col in ["Open", "High", "Low", "Close", "Volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            return df[["Open", "High", "Low", "Close", "Volume", "CloseTime"]].dropna()
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"Binance connection failed: {last_error}")
 
-if "db" not in st.session_state:
-    st.session_state.db = {
-        "admin": {
-            "pw": "123", "cash": 100000.0, "hist": [], "rpnl": 0.0,
-            "bot_on": False, "bot_pos": None, "last_action_ts": 0.0,
-            "bot_logs": [], "sound": None,
-        }
-    }
-if "user" not in st.session_state:
-    st.session_state.user = None
 
-if not st.session_state.user:
-    st.title("📈 URK Paper Trading Login")
-    u = st.text_input("Username", value="admin")
-    p = st.text_input("Password", type="password", value="123")
-    if st.button("Login", type="primary"):
-        if u in st.session_state.db and st.session_state.db[u]["pw"] == p:
-            st.session_state.user = u
-            st.rerun()
-        else:
-            st.error("Wrong login! (Use admin / 123)")
-    st.stop()
-
-ud = st.session_state.db[st.session_state.user]
-if ud.get("sound"):
-    trigger_beep(ud["sound"])
-    ud["sound"] = None
-
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300, show_spinner=False)
 def get_usdinr():
+    # Approximate conversion for display only; BTCUSDT itself is quoted in USDT.
     try:
-        fx = yf.Ticker("USDINR=X").history(period="2d", interval="15m")
-        if not fx.empty:
-            return float(fx["Close"].iloc[-1])
-    except Exception:
-        pass
-    return 84.5
-
-@st.cache_data(ttl=2)
-def get_ltp(sym):
-    try:
-        tk = sym.replace(" (₹)", "")
-        m = get_usdinr()
-        if "BTC-USD" in sym:
-            m = m / 1000.0
-        elif "ETH-USD" in sym:
-            m = m / 100.0
-        df = yf.Ticker(tk).history(period="1d", interval="1m")
-        if not df.empty:
-            return round(float(df["Close"].iloc[-1]) * m, 2)
+        response = requests.get(
+            "https://open.er-api.com/v6/latest/USD",
+            timeout=5,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        response.raise_for_status()
+        value = float(response.json()["rates"]["INR"])
+        if value > 0:
+            return value
     except Exception:
         pass
     return None
 
-# -------- Binance live candle chart (REST refresh fallback) --------
-SYMBOL_MAP = {"BTC-USD (₹)": "BTCUSDT", "ETH-USD (₹)": "ETHUSDT", "SOL-USD (₹)": "SOLUSDT"}
 
-@st.cache_data(ttl=1)
-def fetch_live_candles(pair, interval):
-    # Fetch recent Binance candles on each fragment refresh. This avoids Cloud WebSocket restrictions.
-    endpoints = [
-        "https://data-api.binance.vision/api/v3/klines",
-        "https://api.binance.com/api/v3/klines",
-    ]
-    last_error = None
-    for url in endpoints:
-        try:
-            r = requests.get(url, params={"symbol": pair, "interval": interval, "limit": 100}, timeout=8,
-                             headers={"User-Agent": "Mozilla/5.0"})
-            r.raise_for_status()
-            rows = r.json()
-            df = pd.DataFrame(rows, columns=["OpenTime","Open","High","Low","Close","Volume","CloseTime","QuoteVolume","Trades","TakerBuyBase","TakerBuyQuote","Ignore"])
-            df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms", utc=True)
-            df.set_index("OpenTime", inplace=True)
-            for c in ["Open","High","Low","Close","Volume"]:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-            return df[["Open","High","Low","Close","Volume"]].dropna()
-        except Exception as e:
-            last_error = e
-    raise RuntimeError(f"Binance candle fetch failed: {last_error}")
+def inr(value, rate):
+    if rate is None:
+        return f"${value:,.2f} USDT"
+    return f"₹{value * rate:,.2f}"
 
-@st.fragment(run_every=2)
-def live_chart(sym, timeframe):
-    pair = SYMBOL_MAP[sym]
-    try:
-        df = fetch_live_candles(pair, timeframe)
-        if not df.empty:
-            fig = go.Figure(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=pair))
-            fig.update_layout(title=f"Binance {pair} | {timeframe} | LIVE", height=450, margin=dict(l=10,r=10,t=40,b=10), xaxis_rangeslider_visible=False, template="plotly_dark", uirevision=f"{pair}-{timeframe}")
-            st.plotly_chart(fig, use_container_width=True)
-            st.caption(f"Source: Binance API | Candle refresh: every 2 seconds | Pair: {pair}")
-        else:
-            st.warning("Binance నుండి candles రాలేదు. కొద్దిసేపటికి మళ్లీ ప్రయత్నించండి.")
-    except Exception as e:
-        st.error(f"Live chart connection issue: {e}")
 
-c1, c2 = st.columns((3, 1))
-c1.subheader(f"📈 Paper Trading | Cash: ₹{ud['cash']:,.2f}")
-if c2.button("🚪 Logout", use_container_width=True):
-    st.session_state.user = None
-    st.rerun()
+def init_state():
+    defaults = {
+        "logged_in": False,
+        "password": "123",
+        "cash": STARTING_CASH,
+        "realized_pnl": 0.0,
+        "position": None,
+        "bot_on": False,
+        "last_processed_candle": None,
+        "logs": [],
+        "trades": [],
+        "last_signal": "Waiting for a confirmed 9 EMA / 21 EMA crossover.",
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-un_pnl = 0.0
-if isinstance(ud.get("bot_pos"), dict):
-    bp = ud["bot_pos"]
-    cur_p = get_ltp(bp["sym"]) or bp["entry"]
-    un_pnl = round((cur_p - bp["entry"]) * bp["qty"], 2)
 
-pm1, pm2, pm3 = st.columns(3)
-pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
-pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
-pm3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
-st.divider()
+def add_log(message):
+    stamp = datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S")
+    st.session_state.logs.insert(0, f"[{stamp}] {message}")
+    st.session_state.logs = st.session_state.logs[:100]
 
-now_ist = datetime.now(IST)
-cryptos = ["BTC-USD (₹)", "ETH-USD (₹)", "SOL-USD (₹)"]
-col1, col2, col3 = st.columns(3)
-sym = col1.selectbox("Select Asset:", cryptos, index=0)
-qty = col2.number_input("Quantity:", min_value=1, max_value=100, value=1)
-interval_sec = col3.number_input("Cycle Time (Sec):", min_value=10, max_value=300, value=60)
 
-b1, b2, b3 = st.columns((2, 2, 1))
-if b1.button("▶️ START LOOP", type="primary", use_container_width=True):
-    ud["bot_on"] = True
-    ud["last_action_ts"] = 0.0
-    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 Loop Started!")
-    st.rerun()
-if b2.button("⏹️ STOP LOOP", use_container_width=True):
-    ud["bot_on"] = False
-    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🛑 Loop Stopped.")
-    st.rerun()
-if b3.button("🔄 Reset", use_container_width=True):
-    ud["bot_on"] = False
-    ud["bot_pos"] = None
-    ud["hist"] = []
-    ud["bot_logs"] = []
-    ud["cash"] = 100000.0
-    ud["rpnl"] = 0.0
-    st.rerun()
+def calculate_indicators(df):
+    out = df.copy()
+    out["EMA9"] = out["Close"].ewm(span=9, adjust=False).mean()
+    out["EMA21"] = out["Close"].ewm(span=21, adjust=False).mean()
+    return out
 
-st.subheader("📊 Binance Live Chart")
-timeframe = st.selectbox(
-    "Chart Timeframe:", ["1m", "3m", "5m"], index=0,
-    format_func=lambda x: {"1m": "1 Minute", "3m": "3 Minutes", "5m": "5 Minutes"}[x]
-)
-live_chart(sym, timeframe)
 
-st.subheader("📌 Current Position")
-if isinstance(ud.get("bot_pos"), dict):
-    bp = ud["bot_pos"]
-    cur_p = get_ltp(bp["sym"]) or bp["entry"]
-    live_pnl = round((cur_p - bp["entry"]) * bp["qty"], 2)
-    pos_df = pd.DataFrame([{
-        "Status": "🟢 BOUGHT (HOLDING)", "Asset": bp["sym"],
-        "Qty": bp["qty"], "Buy Price (₹)": bp["entry"],
-        "Live Price (₹)": cur_p, "Live P&L (₹)": f"{live_pnl:+,.2f}",
-        "Buy Time": bp["time"]
-    }])
-    st.dataframe(pos_df, use_container_width=True, hide_index=True)
-else:
-    st.info("⚪ ప్రస్తుతం ఎలాంటి పొజిషన్ లేదు")
+def process_strategy(df, rate):
+    """Process each newly CLOSED candle once; monitor live candle for SL."""
+    if len(df) < 25:
+        return
 
-if ud["bot_on"]:
-    ltp = get_ltp(sym)
-    now_ts = time.time()
-    elapsed = now_ts - ud["last_action_ts"]
-    remaining = max(0, int(interval_sec - elapsed))
-    if ltp is not None:
-        st.info(f"🔄 BOT RUNNING | {sym} | Live Price: ₹{ltp:,.2f} | Next Action: {remaining}s")
-        if ud["bot_pos"] is None and elapsed >= interval_sec:
-            cost = round(ltp * qty, 2)
-            if ud["cash"] >= cost:
-                ud["cash"] = round(ud["cash"] - cost, 2)
-                ud["bot_pos"] = {
-                    "sym": sym, "qty": qty, "entry": ltp,
-                    "time": now_ist.strftime("%H:%M:%S")
+    # Binance's last row is normally the currently-forming candle.
+    # Use only completed candles for crossover signals.
+    closed = df.iloc[:-1]
+    if len(closed) < 22:
+        return
+
+    previous = closed.iloc[-2]
+    signal_candle = closed.iloc[-1]
+    candle_id = str(closed.index[-1])
+
+    # First run after pressing START: don't take an old historical crossover.
+    if st.session_state.last_processed_candle is None:
+        st.session_state.last_processed_candle = candle_id
+    elif st.session_state.last_processed_candle != candle_id:
+        st.session_state.last_processed_candle = candle_id
+
+        crossed_up = (
+            previous["EMA9"] <= previous["EMA21"]
+            and signal_candle["EMA9"] > signal_candle["EMA21"]
+        )
+
+        if st.session_state.position is None and crossed_up:
+            entry_usdt = float(signal_candle["Close"])
+            stop_usdt = float(previous["Low"])
+            qty = 0.001  # Fixed BTC quantity for initial paper test.
+            cost_inr = entry_usdt * qty * rate if rate else 0.0
+
+            if rate is None:
+                st.session_state.last_signal = (
+                    "BUY setup found, but USD/INR conversion is unavailable. "
+                    "Retry after conversion data returns."
+                )
+                add_log("BUY signal found; INR conversion unavailable, trade not opened.")
+            elif stop_usdt >= entry_usdt:
+                st.session_state.last_signal = "BUY setup skipped: previous candle low is not below entry."
+                add_log("BUY setup skipped because previous candle low was not below entry.")
+            elif st.session_state.cash >= cost_inr:
+                st.session_state.cash = round(st.session_state.cash - cost_inr, 2)
+                st.session_state.position = {
+                    "qty": qty,
+                    "entry_usdt": entry_usdt,
+                    "entry_inr": entry_usdt * rate,
+                    "stop_usdt": stop_usdt,
+                    "stop_inr": stop_usdt * rate,
+                    "entry_time": str(closed.index[-1]),
+                    "entry_candle": candle_id,
                 }
-                ud["last_action_ts"] = now_ts
-                ud["sound"] = "buy"
-                ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🟢 AUTO BUY: {qty} {sym} @ ₹{ltp:,.2f}")
-                st.rerun()
+                st.session_state.last_signal = (
+                    f"BUY @ {entry_usdt:,.2f} USDT | SL {stop_usdt:,.2f} USDT"
+                )
+                add_log(
+                    f"🟢 PAPER BUY {qty} BTC @ {entry_usdt:,.2f} USDT "
+                    f"({inr(entry_usdt, rate)}) | SL {stop_usdt:,.2f} USDT"
+                )
             else:
-                st.error("Insufficient Cash!")
-        elif isinstance(ud["bot_pos"], dict) and elapsed >= interval_sec:
-            bp = ud["bot_pos"]
-            pnl = round((ltp - bp["entry"]) * bp["qty"], 2)
-            ud["cash"] = round(ud["cash"] + (ltp * bp["qty"]), 2)
-            ud["rpnl"] = round(ud["rpnl"] + pnl, 2)
-            ud["hist"].insert(0, {
-                "Buy Time": bp["time"], "Sell Time": now_ist.strftime("%H:%M:%S"),
-                "Asset": bp["sym"], "Qty": bp["qty"], "Buy Price": bp["entry"],
-                "Sell Price": ltp, "P&L (₹)": pnl
+                st.session_state.last_signal = "BUY signal found, but paper cash is insufficient."
+                add_log("BUY signal skipped: insufficient paper cash.")
+
+    # Stop-loss check: only candles after the entry candle can trigger the SL.
+    pos = st.session_state.position
+    if pos is not None:
+        live_candle = df.iloc[-1]
+        live_candle_id = str(df.index[-1])
+        if live_candle_id != pos["entry_candle"] and float(live_candle["Low"]) <= pos["stop_usdt"]:
+            exit_usdt = pos["stop_usdt"]
+            exit_inr = exit_usdt * rate if rate else pos["stop_inr"]
+            proceeds = exit_inr * pos["qty"]
+            pnl = (exit_inr - pos["entry_inr"]) * pos["qty"]
+            st.session_state.cash = round(st.session_state.cash + proceeds, 2)
+            st.session_state.realized_pnl = round(st.session_state.realized_pnl + pnl, 2)
+            st.session_state.trades.insert(0, {
+                "Entry time (UTC)": pos["entry_time"],
+                "Exit time (IST)": datetime.now(IST).strftime("%Y-%m-%d %H:%M:%S"),
+                "Qty BTC": pos["qty"],
+                "Entry (₹/BTC)": round(pos["entry_inr"], 2),
+                "Exit (₹/BTC)": round(exit_inr, 2),
+                "Stop (USDT)": round(pos["stop_usdt"], 2),
+                "P&L (₹)": round(pnl, 2),
+                "Reason": "Stop Loss",
             })
-            ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🔴 AUTO SELL: {bp['qty']} {bp['sym']} @ ₹{ltp:,.2f} | P&L: ₹{pnl:+,.2f}")
-            ud["bot_pos"] = None
-            ud["last_action_ts"] = now_ts
-            ud["sound"] = "sell"
+            add_log(
+                f"🔴 STOP LOSS EXIT @ {exit_usdt:,.2f} USDT "
+                f"| Realized P&L {pnl:+,.2f} INR"
+            )
+            st.session_state.position = None
+            st.session_state.last_signal = f"STOP LOSS hit. P&L: ₹{pnl:+,.2f}"
+
+
+init_state()
+
+# ---------------- Login ----------------
+if not st.session_state.logged_in:
+    st.title("📈 URK EMA Paper Trading")
+    st.caption("Binance BTCUSDT · 1-minute · 9 EMA / 21 EMA")
+    with st.form("login_form"):
+        password = st.text_input("Password", type="password", value="123")
+        submitted = st.form_submit_button("Login", type="primary")
+    if submitted:
+        if password == st.session_state.password:
+            st.session_state.logged_in = True
             st.rerun()
+        else:
+            st.error("Wrong password. Default password: 123")
+    st.stop()
+
+# ---------------- Header and controls ----------------
+head1, head2 = st.columns([4, 1])
+head1.title("📈 URK EMA Paper Trading")
+head1.caption("BTCUSDT · Binance live data · 1-minute candles · Paper trading only")
+if head2.button("Logout", use_container_width=True):
+    st.session_state.logged_in = False
+    st.session_state.bot_on = False
+    st.rerun()
+
+rate = get_usdinr()
+try:
+    df = calculate_indicators(fetch_candles())
+    data_error = None
+except Exception as exc:
+    df = pd.DataFrame()
+    data_error = str(exc)
+
+if data_error:
+    st.error(f"Live data issue: {data_error}")
+    st.info("Check internet access and refresh the app.")
+    st.stop()
+
+if rate is None:
+    st.warning("USD/INR conversion is unavailable. Live BTCUSDT chart is shown in USDT; new INR paper entries are paused.")
+
+# Process the strategy only while the bot is on.
+if st.session_state.bot_on:
+    process_strategy(df, rate)
+
+# ---------------- Metrics ----------------
+latest_price = float(df.iloc[-1]["Close"])
+latest_price_inr = latest_price * rate if rate else None
+position = st.session_state.position
+unrealized = 0.0
+if position and rate:
+    unrealized = (latest_price * rate - position["entry_inr"]) * position["qty"]
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("BTCUSDT Live", f"{latest_price:,.2f}")
+m2.metric("BTC Price (INR approx.)", f"₹{latest_price_inr:,.2f}" if latest_price_inr else "Unavailable")
+m3.metric("Realized P&L", f"₹{st.session_state.realized_pnl:+,.2f}")
+m4.metric("Unrealized P&L", f"₹{unrealized:+,.2f}")
+
+st.divider()
+c1, c2, c3 = st.columns([1, 1, 2])
+if c1.button("▶ START EMA BOT", type="primary", use_container_width=True, disabled=st.session_state.bot_on):
+    st.session_state.bot_on = True
+    # Avoid entering on a crossover that happened before START was pressed.
+    closed = df.iloc[:-1]
+    st.session_state.last_processed_candle = str(closed.index[-1]) if len(closed) else None
+    add_log("EMA paper bot started. Waiting for a NEW closed-candle bullish crossover.")
+    st.rerun()
+if c2.button("⏹ STOP BOT", use_container_width=True, disabled=not st.session_state.bot_on):
+    st.session_state.bot_on = False
+    add_log("Bot stopped. Any open paper position remains open; SL monitoring is paused.")
+    st.rerun()
+if c3.button("↻ RESET PAPER ACCOUNT", use_container_width=True):
+    st.session_state.bot_on = False
+    st.session_state.cash = STARTING_CASH
+    st.session_state.realized_pnl = 0.0
+    st.session_state.position = None
+    st.session_state.last_processed_candle = None
+    st.session_state.logs = []
+    st.session_state.trades = []
+    st.session_state.last_signal = "Waiting for a confirmed 9 EMA / 21 EMA crossover."
+    st.rerun()
+
+status = "🟢 BOT RUNNING" if st.session_state.bot_on else "⚪ BOT STOPPED"
+st.subheader(status)
+st.write(f"**Latest strategy status:** {st.session_state.last_signal}")
+st.caption("Signal rule: closed candle EMA9 crosses above EMA21. Entry = crossover candle close. SL = previous candle low.")
+
+# ---------------- Chart ----------------
+fig = go.Figure()
+fig.add_trace(go.Candlestick(
+    x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"],
+    name="BTCUSDT",
+))
+fig.add_trace(go.Scatter(x=df.index, y=df["EMA9"], mode="lines", name="EMA 9", line=dict(width=2)))
+fig.add_trace(go.Scatter(x=df.index, y=df["EMA21"], mode="lines", name="EMA 21", line=dict(width=2)))
+if position:
+    fig.add_hline(y=position["entry_usdt"], line_dash="dot", annotation_text="Entry")
+    fig.add_hline(y=position["stop_usdt"], line_dash="dash", annotation_text="Stop Loss")
+fig.update_layout(
+    title="Binance BTCUSDT · 1 Minute · Live",
+    height=560,
+    template="plotly_dark",
+    xaxis_rangeslider_visible=False,
+    margin=dict(l=10, r=10, t=50, b=10),
+    legend=dict(orientation="h", y=1.02, x=0),
+    uirevision="BTCUSDT-1m",
+)
+st.plotly_chart(fig, use_container_width=True)
+st.caption("Source: Binance public market-data API. Chart refreshes every 2 seconds; EMA signals use completed candles only.")
+
+# ---------------- Position ----------------
+st.subheader("📌 Current Position")
+if position:
+    p1, p2, p3, p4 = st.columns(4)
+    p1.metric("Position", "LONG BTC")
+    p2.metric("Quantity", f'{position["qty"]:.6f} BTC')
+    p3.metric("Entry", f'{position["entry_usdt"]:,.2f} USDT')
+    p4.metric("Stop Loss", f'{position["stop_usdt"]:,.2f} USDT')
+    st.info("Position is open. Stop-loss monitoring runs only while the bot is running.")
+else:
+    st.info("No open paper position.")
+
+# ---------------- Account and history ----------------
+a1, a2 = st.columns(2)
+a1.metric("Available Paper Cash", f'₹{st.session_state.cash:,.2f}')
+a2.metric("Net P&L", f'₹{st.session_state.realized_pnl + unrealized:+,.2f}')
+
+if st.session_state.trades:
+    st.subheader("📋 Completed Paper Trades")
+    st.dataframe(pd.DataFrame(st.session_state.trades), use_container_width=True, hide_index=True)
+
+if st.session_state.logs:
+    st.subheader("📜 Execution Logs")
+    for item in st.session_state.logs[:20]:
+        st.text(item)
+
+# Refresh the dashboard without blocking the Streamlit script with time.sleep().
+if st.session_state.bot_on:
     time.sleep(2)
     st.rerun()
-
-if ud["hist"]:
-    st.subheader("📋 Completed Orders")
-    st.dataframe(pd.DataFrame(ud["hist"]), use_container_width=True, hide_index=True)
-
-if ud["bot_logs"]:
-    st.subheader("📜 Execution Logs")
-    for log in ud["bot_logs"][:15]:
-        st.text(log)
