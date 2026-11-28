@@ -1,6 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 import yfinance as yf
+import requests
 import pandas as pd
 import plotly.graph_objects as go
 import time
@@ -46,12 +47,28 @@ def get_usdinr():
 
 @st.cache_data(ttl=2)
 def get_chart_and_ema(sym, tf):
+    is_crude = (sym == "CRUDEOIL (₹)")
+    is_crypto = sym.endswith("-USD (₹)")
+    m = get_usdinr() if (is_crude or is_crypto) else 1.0
+    m = (m / 1000.0) if "BTC-USD" in sym else ((m / 100.0) if "ETH-USD" in sym else m)
+
+    # 1. Crypto అయితే నేరుగా Binance 24/7 API నుండి వేగంగా డేటా తీసుకోవడం
+    if is_crypto:
+        try:
+            pair = sym.replace("-USD (₹)", "USDT")
+            r = requests.get(f"https://binance.com{pair}&interval={tf}&limit=60", timeout=4).json()
+            rows = []
+            for k in r:
+                rows.append({"Time": pd.to_datetime(k[0], unit="ms", utc=True).tz_convert(IST), "Open": float(k[1])*m, "High": float(k[2])*m, "Low": float(k[3])*m, "Close": float(k[4])*m})
+            df = pd.DataFrame(rows).set_index("Time")
+            df["EMA9"] = df["Close"].ewm(span=9, adjust=False).mean()
+            return df
+        except Exception:
+            pass
+
+    # 2. NSE / MCX / Fallback కోసం yfinance
     try:
-        is_crude = (sym == "CRUDEOIL (₹)")
-        is_crypto = sym.endswith("-USD (₹)")
         tk = "CL=F" if is_crude else (sym.replace(" (₹)", "") if is_crypto else sym)
-        m = get_usdinr() if (is_crude or is_crypto) else 1.0
-        m = (m / 1000.0) if "BTC-USD" in sym else ((m / 100.0) if "ETH-USD" in sym else m)
         df = yf.Ticker(tk).history(period="1d" if is_crypto else "5d", interval="1m")
         if df.empty:
             return pd.DataFrame()
@@ -92,6 +109,22 @@ def execute_exit(ud, bp, cp, reason, now_ist):
     ud["bot_pos"] = None
     ud["sound"] = "sell"
     st.rerun()
+
+def render_chart(df_live, ud, sym, tf, ltp):
+    if df_live.empty:
+        st.warning("⚠️ డేటా లోడ్ అవుతోంది... దయచేసి 2 సెకన్లు వేచి ఉండండి.")
+        return
+    ema_val = round(float(df_live["EMA9"].iloc[-1]), 2)
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=df_live.index, open=df_live["Open"], high=df_live["High"], low=df_live["Low"], close=df_live["Close"], name="Price"))
+    fig.add_trace(go.Scatter(x=df_live.index, y=df_live["EMA9"], mode="lines", line=dict(color="#FFD700", width=2), name="9 EMA"))
+    if isinstance(ud.get("bot_pos"), dict):
+        bp = ud["bot_pos"]
+        is_locked = (bp["sl"] > bp["entry"]) if bp["side"] == "BUY" else (bp["sl"] < bp["entry"])
+        fig.add_hline(y=bp["entry"], line_dash="dash", line_color="cyan", annotation_text=f"{'🟢 BOUGHT' if bp['side'] == 'BUY' else '🔴 SOLD'} @ ₹{bp['entry']:,.2f}", annotation_position="top left")
+        fig.add_hline(y=bp["sl"], line_dash="dot", line_color="#00FFAA" if is_locked else "#FF4B4B", annotation_text=f"{'🔒 LOCKED TSL' if is_locked else '🛑 TSL'} @ ₹{bp['sl']:,.2f}", annotation_position="bottom left")
+    fig.update_layout(title=f"{sym} ({tf}) | LTP: ₹{ltp:,.2f} | 9 EMA: ₹{ema_val:,.2f}", height=360, margin=dict(l=10, r=10, t=35, b=10), xaxis_rangeslider_visible=False, template="plotly_dark")
+    st.plotly_chart(fig, use_container_width=True)
 
 def run_bot_step(ud, df_live, sym, tf, qty, init_sl_pts, trail_gap_pts, ignore_mkt_hrs, now_ist):
     if not ud["bot_on"] or len(df_live) < 3:
@@ -143,6 +176,7 @@ def run_bot_step(ud, df_live, sym, tf, qty, init_sl_pts, trail_gap_pts, ignore_m
     if bp["side"] == "SELL" and (cid != bp["candle_id"]) and curr_green:
         execute_exit(ud, bp, cp, "🟢 GREEN CANDLE EXIT", now_ist)
 
+# ---------------- MAIN UI ----------------
 c1, c2 = st.columns((3, 1))
 c1.subheader(f"🚀 URK 2-Candle Bot | Cash: ₹{ud['cash']:,.2f}")
 if c2.button("🚪 Logout", use_container_width=True):
@@ -161,45 +195,3 @@ if col4.button("🔊 Beep", use_container_width=True):
 sc1, sc2, sc3 = st.columns(3)
 init_sl_pts = sc1.number_input("Initial SL (₹):", 0.5, 500.0, 5.0, 0.5)
 trail_gap_pts = sc2.number_input("Auto TSL Gap (₹):", 0.5, 500.0, 3.0, 0.5)
-ignore_mkt_hrs = sc3.checkbox("24/7 Test Mode", value=True)
-
-df_live = get_chart_and_ema(sym, tf)
-ltp = round(float(df_live["Close"].iloc[-1]), 2) if not df_live.empty else None
-un_pnl = calc_live_pnl(ud["bot_pos"], ltp) if (isinstance(ud.get("bot_pos"), dict) and ltp) else 0.0
-
-pm1, pm2, pm3 = st.columns(3)
-pm1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
-pm2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
-pm3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
-st.divider()
-
-now_ist = datetime.now(IST)
-b1, b2, b3 = st.columns((2, 2, 1))
-if b1.button("▶️ START BOT", type="primary", use_container_width=True):
-    ud["bot_on"] = True
-    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🚀 2-Candle Bot Started ({sym} - {tf})")
-    st.rerun()
-if b2.button("⏹️ STOP BOT", use_container_width=True):
-    ud["bot_on"] = False
-    ud["bot_logs"].insert(0, f"[{now_ist.strftime('%H:%M:%S')}] 🛑 Bot Stopped.")
-    st.rerun()
-if b3.button("🔄 Reset", use_container_width=True):
-    ud["bot_on"] = False
-    ud["bot_pos"] = None
-    ud["hist"] = []
-    ud["bot_logs"] = []
-    ud["traded_candles"] = []
-    ud["cash"] = 100000.0
-    ud["rpnl"] = 0.0
-    st.rerun()
-
-if not df_live.empty:
-    ema_val = round(float(df_live["EMA9"].iloc[-1]), 2)
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df_live.index, open=df_live["Open"], high=df_live["High"], low=df_live["Low"], close=df_live["Close"], name="Price"))
-    fig.add_trace(go.Scatter(x=df_live.index, y=df_live["EMA9"], mode="lines", line=dict(color="#FFD700", width=2), name="9 EMA"))
-    if isinstance(ud.get("bot_pos"), dict):
-        bp = ud["bot_pos"]
-        is_locked = (bp["sl"] > bp["entry"]) if bp["side"] == "BUY" else (bp["sl"] < bp["entry"])
-        fig.add_hline(y=bp["entry"], line_dash="dash", line_color="cyan", annotation_text=f"{'🟢 BOUGHT' if bp['side'] == 'BUY' else '🔴 SOLD'} @ ₹{bp['entry']:,.2f}", annotation_position="top left")
-        fig.add_hline(y=bp["sl"], line_dash="dot", line_color="#00FFAA" if is_locked else "#FF4B4B", annotation_text=f"{'🔒 LOCKED TSL' if is_locked else '🛑 TSL'} @ ₹{bp['sl']:,.2f}", annotation_position="bottom left")
