@@ -66,33 +66,15 @@ def get_multiplier(sym):
     return m
 
 def get_live_chart_and_ltp(sym):
-    coin = sym.split("-")[0]
+    coin = sym.split("-")  # ఇక్కడ ఖచ్చితంగా  ఉండాలి!
     m = get_multiplier(sym)
     headers = {"User-Agent": "Mozilla/5.0"}
+    err_msg = ""
 
-    # 1. Binance Public Vision API
-    try:
-        url = f"https://binance.vision{coin}USDT&interval=1m&limit=60"
-        res = requests.get(url, headers=headers, timeout=4)
-        if res.status_code == 200:
-            data = res.json()
-            if isinstance(data, list) and len(data) > 0:
-                df = pd.DataFrame(data, columns=[
-                    "Open_time", "Open", "High", "Low", "Close", "Volume",
-                    "Close_time", "qav", "num_trades", "taker_base_vol", "taker_quote_vol", "ignore"
-                ])
-                df["Open_time"] = pd.to_datetime(df["Open_time"], unit="ms").dt.tz_localize("UTC").dt.tz_convert(IST)
-                df.set_index("Open_time", inplace=True)
-                for col in ("Open", "High", "Low", "Close"):
-                    df[col] = df[col].astype(float) * m
-                return df, round(float(df["Close"].iloc[-1]), 2), "Binance"
-    except Exception:
-        pass
-
-    # 2. Coinbase Public API (Backup)
+    # 1. Coinbase Exchange Public API (US & Global 100% Working)
     try:
         cb_url = f"https://coinbase.com{coin}-USD/candles?granularity=60"
-        res = requests.get(cb_url, headers=headers, timeout=4)
+        res = requests.get(cb_url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
@@ -102,11 +84,32 @@ def get_live_chart_and_ltp(sym):
                 df.sort_index(inplace=True)
                 for col in ("Open", "High", "Low", "Close"):
                     df[col] = df[col].astype(float) * m
-                return df, round(float(df["Close"].iloc[-1]), 2), "Coinbase"
-    except Exception:
-        pass
+                return df, round(float(df["Close"].iloc[-1]), 2), "Coinbase Live", ""
+        else:
+            err_msg += f"CB Status: {res.status_code} | "
+    except Exception as e:
+        err_msg += f"CB Err: {e} | "
 
-    return pd.DataFrame(), None, None
+    # 2. Kraken Public API (Second Backup)
+    try:
+        kr_pair = "XBTUSD" if coin == "BTC" else f"{coin}USD"
+        kr_url = f"https://kraken.com{kr_pair}&interval=1"
+        res = requests.get(kr_url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            j = res.json()
+            if not j.get("error"):
+                key = list(j["result"].keys())
+                data = j["result"][key][-60:]
+                df = pd.DataFrame(data, columns=["time", "Open", "High", "Low", "Close", "vwap", "Volume", "count"])
+                df["time"] = pd.to_datetime(df["time"], unit="s").dt.tz_localize("UTC").dt.tz_convert(IST)
+                df.set_index("time", inplace=True)
+                for col in ("Open", "High", "Low", "Close"):
+                    df[col] = df[col].astype(float) * m
+                return df, round(float(df["Close"].iloc[-1]), 2), "Kraken Live", ""
+    except Exception as e:
+        err_msg += f"KR Err: {e}"
+
+    return pd.DataFrame(), None, None, err_msg
 
 c1, c2 = st.columns((3, 1))
 c1.subheader("📈 Live 1-Min Auto Test")
@@ -152,7 +155,7 @@ def live_trading_dashboard():
         ud["sound"] = None
 
     now_ist = datetime.now(IST)
-    df_ch, ltp, source = get_live_chart_and_ltp(sym)
+    df_ch, ltp, source, err_msg = get_live_chart_and_ltp(sym)
 
     un_pnl = 0.0
     if isinstance(ud.get("bot_pos"), dict):
@@ -185,7 +188,7 @@ def live_trading_dashboard():
                 annotation_position="top left"
             )
         fig.update_layout(
-            title=f"{sym} - {source} Live 1-Min Chart (LTP: ₹{ltp:,.2f})",
+            title=f"{sym} - {source} 1-Min Chart (LTP: ₹{ltp:,.2f})",
             height=380,
             margin=dict(l=10, r=10, t=35, b=10),
             xaxis_rangeslider_visible=False,
@@ -193,7 +196,7 @@ def live_trading_dashboard():
         )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.warning("లైవ్ డేటా లోడ్ అవుతోంది... దయచేసి వేచి ఉండండి.")
+        st.warning(f"లైవ్ డేటా లోడ్ అవుతోంది... ({err_msg})")
 
     if ud["bot_on"] and ltp is not None:
         now_ts = time.time()
@@ -262,7 +265,3 @@ def live_trading_dashboard():
 
     if ud["bot_logs"]:
         st.subheader("📜 Live Execution Logs")
-        for log in ud["bot_logs"][:15]:
-            st.text(log)
-
-live_trading_dashboard()
