@@ -3,6 +3,8 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import requests
+import websocket
+import threading, json
 import time, io, wave, struct, math
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -81,37 +83,93 @@ def get_ltp(sym):
         pass
     return None
 
-@st.cache_data(ttl=2)
-def get_chart_data(sym, timeframe):
+# -------- Binance WebSocket live candles --------
+SYMBOL_MAP = {"BTC-USD (₹)": "BTCUSDT", "ETH-USD (₹)": "ETHUSDT", "SOL-USD (₹)": "SOLUSDT"}
+
+@st.cache_resource
+def live_store():
+    return {"data": {}, "lock": threading.Lock(), "threads": set(), "status": {}}
+
+STORE = live_store()
+
+def load_history(pair, interval):
+    url = "https://data-api.binance.vision/api/v3/klines"
+    r = requests.get(url, params={"symbol": pair, "interval": interval, "limit": 80}, timeout=10)
+    r.raise_for_status()
+    rows = r.json()
+    df = pd.DataFrame(rows, columns=["OpenTime","Open","High","Low","Close","Volume","CloseTime","QuoteVolume","Trades","TakerBuyBase","TakerBuyQuote","Ignore"])
+    df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms", utc=True)
+    df.set_index("OpenTime", inplace=True)
+    for c in ["Open","High","Low","Close","Volume"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df[["Open","High","Low","Close","Volume"]].dropna()
+
+def ws_worker(pair, interval, key):
+    store = live_store()
+    stream = f"{pair.lower()}@kline_{interval}"
+    url = f"wss://stream.binance.com:9443/ws/{stream}"
+    while True:
+        try:
+            def on_message(ws, message):
+                payload = json.loads(message)
+                k = payload.get("k", {})
+                if not k: return
+                t = pd.to_datetime(k["t"], unit="ms", utc=True)
+                row = {"Open":float(k["o"]),"High":float(k["h"]),"Low":float(k["l"]),"Close":float(k["c"]),"Volume":float(k["v"])}
+                with store["lock"]:
+                    df = store["data"].get(key, pd.DataFrame())
+                    if t in df.index:
+                        df.loc[t, list(row.keys())] = list(row.values())
+                    else:
+                        df.loc[t, list(row.keys())] = list(row.values())
+                    df = df.sort_index().tail(100)
+                    store["data"][key] = df
+                    store["status"][key] = "LIVE"
+            def on_error(ws, error):
+                with store["lock"]: store["status"][key] = f"Connection error: {error}"
+            def on_close(ws, code, msg):
+                with store["lock"]: store["status"][key] = "Reconnecting..."
+            def on_open(ws):
+                with store["lock"]: store["status"][key] = "LIVE"
+            ws = websocket.WebSocketApp(url, on_message=on_message, on_error=on_error, on_close=on_close, on_open=on_open)
+            ws.run_forever(ping_interval=20, ping_timeout=10)
+        except Exception as e:
+            with store["lock"]: store["status"][key] = f"Reconnecting: {e}"
+        time.sleep(3)
+
+def ensure_live(pair, interval):
+    key = f"{pair}_{interval}"
+    store = live_store()
+    with store["lock"]:
+        if key in store["threads"]:
+            return key
+        store["threads"].add(key)
     try:
-        symbol_map = {
-            "BTC-USD (₹)": "BTCUSDT",
-            "ETH-USD (₹)": "ETHUSDT",
-            "SOL-USD (₹)": "SOLUSDT"
-        }
-        binance_symbol = symbol_map.get(sym)
-        if not binance_symbol:
-            return pd.DataFrame()
-        url = "https://data-api.binance.vision/api/v3/klines"
-        params = {"symbol": binance_symbol, "interval": timeframe, "limit": 60}
-        response = requests.get(url, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data, columns=[
-            "OpenTime", "Open", "High", "Low", "Close", "Volume",
-            "CloseTime", "QuoteVolume", "Trades", "TakerBuyBase",
-            "TakerBuyQuote", "Ignore"
-        ])
-        df["OpenTime"] = pd.to_datetime(df["OpenTime"], unit="ms", utc=True)
-        df.set_index("OpenTime", inplace=True)
-        for col in ["Open", "High", "Low", "Close", "Volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+        hist = load_history(pair, interval)
+        with store["lock"]: store["data"][key] = hist
     except Exception as e:
-        st.error(f"Binance Chart Error: {e}")
-        return pd.DataFrame()
+        with store["lock"]:
+            store["data"][key] = pd.DataFrame()
+            store["status"][key] = f"History load failed: {e}"
+    th = threading.Thread(target=ws_worker, args=(pair, interval, key), daemon=True)
+    th.start()
+    return key
+
+@st.fragment(run_every=1)
+def live_chart(sym, timeframe):
+    pair = SYMBOL_MAP[sym]
+    key = ensure_live(pair, timeframe)
+    store = live_store()
+    with store["lock"]:
+        df = store["data"].get(key, pd.DataFrame()).copy()
+        status = store["status"].get(key, "Connecting...")
+    if not df.empty:
+        fig = go.Figure(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=pair))
+        fig.update_layout(title=f"Binance {pair} | {timeframe} | LIVE", height=450, margin=dict(l=10,r=10,t=40,b=10), xaxis_rangeslider_visible=False, template="plotly_dark", uirevision=f"{pair}-{timeframe}")
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption(f"Source: Binance WebSocket Spot | Price in USDT | Connection: {status}")
+    else:
+        st.warning(f"Chart data waiting: {status}")
 
 c1, c2 = st.columns((3, 1))
 c1.subheader(f"📈 Paper Trading | Cash: ₹{ud['cash']:,.2f}")
@@ -162,23 +220,7 @@ timeframe = st.selectbox(
     "Chart Timeframe:", ["1m", "3m", "5m"], index=0,
     format_func=lambda x: {"1m": "1 Minute", "3m": "3 Minutes", "5m": "5 Minutes"}[x]
 )
-df_ch = get_chart_data(sym, timeframe)
-if not df_ch.empty:
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(
-        x=df_ch.index, open=df_ch["Open"], high=df_ch["High"],
-        low=df_ch["Low"], close=df_ch["Close"],
-        name=sym.replace(" (₹)", "") + " / USDT"
-    ))
-    fig.update_layout(
-        title=f"Binance {sym.replace(' (₹)', '')} | {timeframe}",
-        height=450, margin=dict(l=10, r=10, t=40, b=10),
-        xaxis_rangeslider_visible=False, template="plotly_dark"
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption("Source: Binance Spot | Prices in USDT | Public market data")
-else:
-    st.warning("Binance chart data load అవ్వలేదు. Internet/API check చేయండి.")
+live_chart(sym, timeframe)
 
 st.subheader("📌 Current Position")
 if isinstance(ud.get("bot_pos"), dict):
