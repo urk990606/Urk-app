@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 st.set_page_config(page_title="URK 1-Min Live Bot", page_icon="📈", layout="centered")
 IST = ZoneInfo("Asia/Kolkata")
 
-# ---------------- AUDIO BEEP GENERATOR ----------------
 @st.cache_data
 def make_wav(freq=950, dur=0.35):
     rate = 22050
@@ -27,7 +26,6 @@ def make_wav(freq=950, dur=0.35):
 def trigger_beep(kind="buy"):
     st.audio(make_wav(1000, 0.35) if kind == "buy" else make_wav(550, 0.5), format="audio/wav", autoplay=True)
 
-# ---------------- SESSION STATE DB ----------------
 if "db" not in st.session_state:
     st.session_state.db = {
         "admin": {
@@ -45,7 +43,6 @@ if "db" not in st.session_state:
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# ---------------- LOGIN SCREEN ----------------
 if not st.session_state.user:
     st.title("📈 URK 1-Min Live Bot")
     u = st.text_input("Username", value="admin")
@@ -60,9 +57,8 @@ if not st.session_state.user:
 
 ud = st.session_state.db[st.session_state.user]
 
-# ---------------- LIVE DATA API (BINANCE + COINBASE BACKUP) ----------------
 def get_multiplier(sym):
-    m = 87.5  # USD to INR rate
+    m = 87.5
     if "BTC" in sym:
         return m / 1000.0
     elif "ETH" in sym:
@@ -70,11 +66,11 @@ def get_multiplier(sym):
     return m
 
 def get_live_chart_and_ltp(sym):
-    coin = sym.split("-")[0]  # "BTC", "ETH", or "SOL"
+    coin = sym.split("-")[0]
     m = get_multiplier(sym)
     headers = {"User-Agent": "Mozilla/5.0"}
 
-    # 1. Try Binance Vision Public API
+    # 1. Binance Public Vision API
     try:
         url = f"https://binance.vision{coin}USDT&interval=1m&limit=60"
         res = requests.get(url, headers=headers, timeout=4)
@@ -93,7 +89,7 @@ def get_live_chart_and_ltp(sym):
     except Exception:
         pass
 
-    # 2. Fallback: Coinbase Exchange Public API (Works 100% on US Streamlit Servers)
+    # 2. Coinbase Public API (Backup)
     try:
         cb_url = f"https://coinbase.com{coin}-USD/candles?granularity=60"
         res = requests.get(cb_url, headers=headers, timeout=4)
@@ -112,7 +108,6 @@ def get_live_chart_and_ltp(sym):
 
     return pd.DataFrame(), None, None
 
-# ---------------- TOP BAR & CONTROLS ----------------
 c1, c2 = st.columns((3, 1))
 c1.subheader("📈 Live 1-Min Auto Test")
 if c2.button("🚪 Logout", use_container_width=True):
@@ -150,7 +145,6 @@ if b3.button("🔄 Reset", use_container_width=True):
 
 st.divider()
 
-# ---------------- LIVE UPDATING SECTION (EVERY 2 SECONDS) ----------------
 @st.fragment(run_every=2)
 def live_trading_dashboard():
     if ud.get("sound"):
@@ -160,21 +154,18 @@ def live_trading_dashboard():
     now_ist = datetime.now(IST)
     df_ch, ltp, source = get_live_chart_and_ltp(sym)
 
-    # P&L Calculation
     un_pnl = 0.0
     if isinstance(ud.get("bot_pos"), dict):
         bp = ud["bot_pos"]
         cur_p = ltp if ltp is not None else bp["entry"]
         un_pnl = round((cur_p - bp["entry"]) * bp["qty"], 2)
 
-    # Metrics Row
     m0, m1, m2, m3 = st.columns(4)
     m0.metric("Available Cash", f"₹{ud['cash']:,.2f}")
     m1.metric("Realized P&L", f"₹{ud['rpnl']:+,.2f}")
     m2.metric("Unrealized P&L", f"₹{un_pnl:+,.2f}")
     m3.metric("Net Total P&L", f"₹{round(ud['rpnl'] + un_pnl, 2):+,.2f}")
 
-    # Live Candlestick Chart
     if not df_ch.empty:
         fig = go.Figure()
         fig.add_trace(go.Candlestick(
@@ -204,14 +195,12 @@ def live_trading_dashboard():
     else:
         st.warning("లైవ్ డేటా లోడ్ అవుతోంది... దయచేసి వేచి ఉండండి.")
 
-    # Auto Execution Logic
     if ud["bot_on"] and ltp is not None:
         now_ts = time.time()
         elapsed = now_ts - ud["last_action_ts"]
         remaining = max(0, int(interval_sec - elapsed))
         st.info(f"🔄 **BOT RUNNING** | Live **{sym}**: **₹{ltp:,.2f}** | Next Action in: **{remaining}s**")
 
-        # 1. BUY ACTION
         if ud["bot_pos"] is None and elapsed >= interval_sec:
             cost = round(ltp * qty, 2)
             if ud["cash"] >= cost:
@@ -229,7 +218,6 @@ def live_trading_dashboard():
             else:
                 st.error("Insufficient Cash!")
 
-        # 2. SELL ACTION
         elif isinstance(ud.get("bot_pos"), dict) and elapsed >= interval_sec:
             bp = ud["bot_pos"]
             pnl = round((ltp - bp["entry"]) * bp["qty"], 2)
@@ -250,7 +238,6 @@ def live_trading_dashboard():
             ud["sound"] = "sell"
             st.rerun()
 
-    # Current Position Table
     st.subheader("📌 Current Position (ప్రస్తుత పొజిషన్)")
     if isinstance(ud.get("bot_pos"), dict):
         bp = ud["bot_pos"]
@@ -264,3 +251,18 @@ def live_trading_dashboard():
             "Live Price (₹)": cur_p,
             "Live P&L (₹)": f"{live_pnl:+,.2f}",
             "Buy Time": bp["time"]
+        }])
+        st.dataframe(pos_df, use_container_width=True, hide_index=True)
+    else:
+        st.info("⚪ ప్రస్తుతం ఎలాంటి పొజిషన్ లేదు (Waiting for Next BUY)")
+
+    if ud["hist"]:
+        st.subheader("📋 Completed Orders (1-Min Buy/Sell History)")
+        st.dataframe(pd.DataFrame(ud["hist"]), use_container_width=True, hide_index=True)
+
+    if ud["bot_logs"]:
+        st.subheader("📜 Live Execution Logs")
+        for log in ud["bot_logs"][:15]:
+            st.text(log)
+
+live_trading_dashboard()
